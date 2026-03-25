@@ -1,0 +1,77 @@
+﻿<Window x:Class="LeapMergeDoc.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:pages="clr-namespace:LeapMergeDoc.Pages"
+        mc:Ignorable="d"
+        Title="Matter Open Excel Tool" Height="700" Width="800"
+        WindowStartupLocation="CenterScreen"
+        Background="#F5F5F5">
+    
+    <Window.Resources>
+        <Style TargetType="TabItem">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="Border" 
+                                Background="#E5E7EB" 
+                                CornerRadius="8,8,0,0" 
+                                Padding="20,12" 
+                                Margin="0,0,4,0"
+                                Cursor="Hand">
+                            <ContentPresenter x:Name="ContentSite"
+                                              ContentSource="Header"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Border" Property="Background" Value="#2563EB"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="False">
+                                <Setter Property="Foreground" Value="#374151"/>
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                    <Condition Property="IsSelected" Value="False"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="Border" Property="Background" Value="#D1D5DB"/>
+                            </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize" Value="14"/>
+        </Style>
+    </Window.Resources>
+    
+    <Grid>
+        <TabControl Background="Transparent" BorderThickness="0" Padding="20,20,20,0">
+            <TabItem Header="📁 Merge Files">
+                <Frame Source="Pages/MergeFilesPage.xaml" NavigationUIVisibility="Hidden"/>
+            </TabItem>
+            <TabItem Header="🗄️ Case Import">
+                <Frame Source="Pages/DatabaseImportPage.xaml" NavigationUIVisibility="Hidden"/>
+            </TabItem>
+            <TabItem Header="👥 Client Import">
+                <Frame Source="Pages/ClientImportPage.xaml" NavigationUIVisibility="Hidden"/>
+            </TabItem>
+            <TabItem Header="📇 Contact Import">
+                <Frame Source="Pages/ContactImportPage.xaml" NavigationUIVisibility="Hidden"/>
+            </TabItem>
+            <TabItem Header="📒 Journal Entry">
+                <Frame Source="Pages/JournalEntryImportPage.xaml" NavigationUIVisibility="Hidden"/>
+            </TabItem>
+            <TabItem Header="� Account Update">
+                <Frame Source="Pages/AccountUpdateImportPage.xaml" NavigationUIVisibility="Hidden"/>
+            </TabItem>
+            <TabItem Header="�📤 Files Collection">
+                <Frame Source="Pages/FilesCollectionImportPage.xaml" NavigationUIVisibility="Hidden"/>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</Window>
