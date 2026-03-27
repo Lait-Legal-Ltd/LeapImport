@@ -997,12 +997,12 @@ namespace LeapMergeDoc.Services
         {
             string sql = @"
                 INSERT INTO tbl_acc_client_payment (
-                    payment_number, payment_date, fk_client_bank_id, fk_case_id, fk_client_id,
-                    paid_to, transaction_description, amount, authorised_by, payment_type_id,
+                    payment_number, payment_create_date, fk_client_bank_id, fk_case_id,
+                    pay_to, transaction_description, amount, authorised_by, payment_method,
                     payment_reference, comments, fk_transaction_id, fk_branch_id,
-                    entry_date, staff_id, is_cancelled, is_client
+                    entry_date, paid_by, is_cancelled, is_client
                 ) VALUES (
-                    @paymentNumber, @paymentDate, @clientBankId, @caseId, @clientId,
+                    @paymentNumber, @paymentDate, @clientBankId, @caseId,
                     @paidTo, @description, @amount, @authorisedBy, @paymentTypeId,
                     @paymentReference, @comments, @transactionId, @branchId,
                     @entryDate, @staffId, @isCancelled, @isClient
@@ -1076,20 +1076,21 @@ namespace LeapMergeDoc.Services
                 reference: invoiceNumber);
 
             // Get income account ID (default to 1 if not found)
-            int incomeAccountId = data.IncomeAccountId ?? GetDefaultIncomeAccountId(connection, transaction);
+            //int incomeAccountId = data.IncomeAccountId ?? GetDefaultIncomeAccountId(connection, transaction);
+            int incomeAccountId = data.IncomeAccountId ?? 0;
 
             // Insert invoice
             string sql = @"
-                INSERT INTO tbl_acc_invoices (
-                    fk_branch_id, fk_case_id, invoice_number, invoice_date, due_date,
-                    total_amount, tax_amount, net_amount, balance_due, fk_transaction_id,
-                    fk_current_status, entry_date, staff_id, is_deleted, invoice_type,
-                    fk_income_account_id, comments
+                INSERT INTO tbl_acc_invoice (
+                    fk_branch_id, fk_case_id, invoice_number, finalised_on, due_date,
+                    total, tax, amount, fk_transaction_id,
+                    fk_current_status, entry_date, authorised_by, is_cancelled, authorisation_type,
+                    finalised_comments
                 ) VALUES (
                     @branchId, @caseId, @invoiceNumber, @invoiceDate, @dueDate,
-                    @totalAmount, @taxAmount, @netAmount, @balanceDue, @transactionId,
+                    @totalAmount, @taxAmount, @netAmount, @transactionId,
                     @currentStatus, @entryDate, @staffId, @isDeleted, @invoiceType,
-                    @incomeAccountId, @comments
+                    @comments
                 );
                 SELECT LAST_INSERT_ID();";
 
@@ -1109,8 +1110,8 @@ namespace LeapMergeDoc.Services
                 cmd.Parameters.AddWithValue("@entryDate", DateTime.UtcNow);
                 cmd.Parameters.AddWithValue("@staffId", _userId);
                 cmd.Parameters.AddWithValue("@isDeleted", false);
-                cmd.Parameters.AddWithValue("@invoiceType", "Quick");
-                cmd.Parameters.AddWithValue("@incomeAccountId", incomeAccountId);
+                cmd.Parameters.AddWithValue("@invoiceType", "Approved");
+                //cmd.Parameters.AddWithValue("@incomeAccountId", incomeAccountId);
                 cmd.Parameters.AddWithValue("@comments", data.Comments ?? "Imported invoice");
 
                 int invoiceId = Convert.ToInt32(cmd.ExecuteScalar());
@@ -1222,7 +1223,7 @@ namespace LeapMergeDoc.Services
 
         private string GenerateInvoiceNumber(MySqlConnection connection, MySqlTransaction transaction)
         {
-            string sql = "SELECT COALESCE(MAX(CAST(invoice_number AS UNSIGNED)), 0) + 1 FROM tbl_acc_invoices WHERE invoice_number REGEXP '^[0-9]+$'";
+            string sql = "SELECT COALESCE(MAX(CAST(invoice_number AS UNSIGNED)), 0) + 1 FROM tbl_acc_invoice WHERE invoice_number REGEXP '^[0-9]+$'";
             using (var cmd = new MySqlCommand(sql, connection, transaction))
             {
                 return cmd.ExecuteScalar()?.ToString() ?? "1";
@@ -1242,15 +1243,16 @@ namespace LeapMergeDoc.Services
         private void SaveInvoiceStatus(MySqlConnection connection, MySqlTransaction transaction, int invoiceId, int statusId)
         {
             string sql = @"
-                INSERT INTO tbl_acc_invoice_status_history (
-                    fk_invoice_id, fk_status_id, status_date, fk_user_id
+                INSERT INTO tbl_acc_invoice_status (
+                    fk_invoice_id, fk_branch_id, invoice_status_type_id, date_time, fk_user_id
                 ) VALUES (
-                    @invoiceId, @statusId, @statusDate, @userId
+                    @invoiceId, @branchId, @statusId, @statusDate, @userId
                 )";
 
             using (var cmd = new MySqlCommand(sql, connection, transaction))
             {
                 cmd.Parameters.AddWithValue("@invoiceId", invoiceId);
+                cmd.Parameters.AddWithValue("@branchId", _branchId);
                 cmd.Parameters.AddWithValue("@statusId", statusId);
                 cmd.Parameters.AddWithValue("@statusDate", DateTime.UtcNow);
                 cmd.Parameters.AddWithValue("@userId", _userId);
@@ -1413,12 +1415,20 @@ namespace LeapMergeDoc.Services
 
         private decimal GetBankOpeningBalance(MySqlConnection connection, MySqlTransaction transaction, int bankId)
         {
+            //string sql = @"
+            //    SELECT COALESCE(
+            //        (SELECT balance_post FROM tbl_acc_client_bank_transactions 
+            //         WHERE fk_client_bank_id = @bankId AND is_cancelled = 0 
+            //         ORDER BY client_bank_transaction_id DESC LIMIT 1),
+            //        (SELECT  FROM tbl_acc_bank_account WHERE bank_account_id = @bankId),
+            //        0
+            //    ) as balance";
+
             string sql = @"
                 SELECT COALESCE(
                     (SELECT balance_post FROM tbl_acc_client_bank_transactions 
                      WHERE fk_client_bank_id = @bankId AND is_cancelled = 0 
                      ORDER BY client_bank_transaction_id DESC LIMIT 1),
-                    (SELECT opening_balance FROM tbl_acc_client_bank_accounts WHERE client_bank_id = @bankId),
                     0
                 ) as balance";
 
