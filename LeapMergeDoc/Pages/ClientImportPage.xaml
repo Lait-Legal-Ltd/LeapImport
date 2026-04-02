@@ -158,7 +158,7 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBox x:Name="txtConnectionString" Grid.Column="0" 
-                             Text="Server=localhost;Database=customerdbv1;User=root;Password=1qaz!QAZ"
+                             Text="Server=localhost;Database=nml-live;User=root;Password=1qaz!QAZ"
                              FontSize="12" Padding="10" VerticalContentAlignment="Center"
                              BorderBrush="#D1D5DB" BorderThickness="1"/>
                     <Button Grid.Column="1" Content="🔗 Test" Margin="10,0,0,0"
@@ -202,6 +202,11 @@
                     IsEnabled="False"
                     Margin="0,0,10,0"
                     Click="BtnImport_Click"/>
+            <Button x:Name="btnExport" Content="📊 Export to Excel" 
+                    Style="{StaticResource ModernButton}"
+                    IsEnabled="False"
+                    Margin="0,0,10,0"
+                    Click="BtnExport_Click"/>
             <Button x:Name="btnTruncate" Content="🗑️ Truncate Clients" 
                     Style="{StaticResource DangerButton}"
                     Click="BtnTruncate_Click"/>

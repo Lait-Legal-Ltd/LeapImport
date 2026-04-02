@@ -3,12 +3,17 @@ namespace LeapMergeDoc.Models
     public class ExcelRowData
     {
         public string? Title { get; set; }
+        public string? Initials { get; set; }
+        public string? Forename { get; set; }  // Maps to GivenNames
+        public string? Surname { get; set; }   // Maps to LastNames (Company name if no Forename)
         public string? GivenNames { get; set; }
         public string? LastNames { get; set; }
         public string? ShortName { get; set; }
         public string? ClientName { get; set; }
         public string? FirstEmailAddress { get; set; }
         public DateTime? DateOfBirth { get; set; }
+        public string? House { get; set; }     // Maps to AddressLine1
+        public string? Area { get; set; }      // Maps to AddressLine2
         public string? BuildingName { get; set; }
         public string? StreetLevel { get; set; }
         public string? Number { get; set; }
@@ -33,16 +38,18 @@ namespace LeapMergeDoc.Models
         public string? Exchange { get; set; }
         public bool? MktConsent { get; set; }
 
-        public string FullAddress => string.Join(", ", new[] { BuildingName, Number, Street, StreetLevel, TownCity, County, Postcode, Country }
+        public string FullAddress => string.Join(", ", new[] { House, Area, BuildingName, Number, Street, StreetLevel, TownCity, County, Postcode, Country }
             .Where(s => !string.IsNullOrWhiteSpace(s)));
 
         public string PrimaryContactNumber => new[] { Mobile, Phone, Home, Work }
             .FirstOrDefault(s => !string.IsNullOrWhiteSpace(s)) ?? "";
 
-        public string AddressLine1 => string.Join(" ", new[] { BuildingName, Number, Street }
-            .Where(s => !string.IsNullOrWhiteSpace(s)));
+        // For the new format: House = AddressLine1, Area = AddressLine2
+        // Falls back to old format if House is empty
+        public string AddressLine1 => !string.IsNullOrWhiteSpace(House) ? House : 
+            string.Join(" ", new[] { BuildingName, Number, Street }.Where(s => !string.IsNullOrWhiteSpace(s)));
 
-        public string AddressLine2 => StreetLevel ?? "";
+        public string AddressLine2 => !string.IsNullOrWhiteSpace(Area) ? Area : (StreetLevel ?? "");
     }
 
     public class CaseExcelData
@@ -68,6 +75,14 @@ namespace LeapMergeDoc.Models
         public string? MatterType { get; set; }
         public string? MatterDescription { get; set; }
         public DateTime? ArchiveDate { get; set; }
+
+        // New fields for LEAP format
+        public string? ClientNo { get; set; }       // Client No column (e.g., SMI0001)
+        public string? MatterNumber { get; set; }   // Matter column (e.g., 1, 2, 3)
+        public string? FeeEarnerCode { get; set; }  // F/E column (fee earner code)
+        public string? WorkId { get; set; }         // Work Id column (case type code)
+        public string? Surname { get; set; }        // Surname for client lookup
+        public string? Forename { get; set; }       // Forename for client lookup
     }
 
     public class ProcessedCaseData
@@ -151,4 +166,56 @@ namespace LeapMergeDoc.Models
         public int? FolderId { get; set; }
         public List<FileUploadInfo> Files { get; set; } = new List<FileUploadInfo>();
     }
+
+    #region User Import Models
+
+    public class UserExcelRowData
+    {
+        public string? Title { get; set; }
+        public string? FirstName { get; set; }
+        public string? MiddleName { get; set; }
+        public string? LastName { get; set; }
+        public string? UserCode { get; set; }        // F/E column (Fee Earner code)
+        public string? FeeEarnerDescription { get; set; } // Full name from Excel
+        public string? Email { get; set; }
+        public string? HomePhone { get; set; }
+        public string? Mobile { get; set; }
+        public string? Address { get; set; }
+        public string? Qualifications { get; set; }
+        public string? Designation { get; set; }     // Fee Earner Status (Consultant, etc.)
+        public string? NiNumber { get; set; }
+        public DateTime? DateOfBirth { get; set; }
+        public bool? Sex { get; set; }              // true = Male, false = Female
+        public string? Notes { get; set; }
+        public bool? InUse { get; set; }            // In Use column -> maps to IsActive
+
+        public string FullName => string.Join(" ", new[] { FirstName, MiddleName, LastName }
+            .Where(s => !string.IsNullOrWhiteSpace(s)));
+    }
+
+    public class ProcessedUserData
+    {
+        public UserExcelRowData? OriginalData { get; set; }
+        public int? TitleId { get; set; }
+        public int? FkUserRoleId { get; set; }
+        public int? FkBranchId { get; set; }
+        public bool IsActive { get; set; } = true;
+        public bool IsDeleted { get; set; } = false;
+        public bool IsDuplicate { get; set; } = false;
+        public string? DuplicateReason { get; set; }
+        public int? ExistingUserId { get; set; }    // If duplicate found, store existing user ID
+    }
+
+    public class ExistingUserInfo
+    {
+        public int UserId { get; set; }
+        public string? UserCode { get; set; }
+        public string? FirstName { get; set; }
+        public string? LastName { get; set; }
+        public string? Email { get; set; }
+        public bool? IsActive { get; set; }
+        public bool? IsDeleted { get; set; }
+    }
+
+    #endregion
 }

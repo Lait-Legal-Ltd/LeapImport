@@ -9,13 +9,13 @@ using System.Windows.Controls;
 
 namespace LeapMergeDoc.Pages
 {
-    public partial class ClientImportPage : Page
+    public partial class UserImportPage : Page
     {
-        private string? _clientFilePath;
-        private List<ExcelRowData>? _excelData;
-        private List<ProcessedClientData>? _processedData;
+        private string? _userFilePath;
+        private List<UserExcelRowData>? _excelData;
+        private List<ProcessedUserData>? _processedData;
 
-        public ClientImportPage()
+        public UserImportPage()
         {
             ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
             InitializeComponent();
@@ -51,116 +51,119 @@ namespace LeapMergeDoc.Pages
             }
         }
 
-        private void BtnSelectClientFile_Click(object sender, RoutedEventArgs e)
+        private void BtnSelectUserFile_Click(object sender, RoutedEventArgs e)
         {
             var dialog = new OpenFileDialog
             {
-                Title = "Select Client Excel/CSV File",
+                Title = "Select User Excel/CSV File",
                 Filter = "Excel/CSV Files (*.xlsx;*.xls;*.csv)|*.xlsx;*.xls;*.csv|Excel Files (*.xlsx;*.xls)|*.xlsx;*.xls|CSV Files (*.csv)|*.csv|All Files (*.*)|*.*",
                 FilterIndex = 1
             };
 
             if (dialog.ShowDialog() == true)
             {
-                _clientFilePath = dialog.FileName;
-                txtClientFilePath.Text = _clientFilePath;
-                txtClientFilePath.Foreground = System.Windows.Media.Brushes.DarkGreen;
+                _userFilePath = dialog.FileName;
+                txtUserFilePath.Text = _userFilePath;
+                txtUserFilePath.Foreground = System.Windows.Media.Brushes.DarkGreen;
                 btnPreview.IsEnabled = true;
-                UpdateStatus($"File selected: {Path.GetFileName(_clientFilePath)}");
+                UpdateStatus($"File selected: {Path.GetFileName(_userFilePath)}");
             }
         }
 
         private async void BtnPreview_Click(object sender, RoutedEventArgs e)
         {
-            if (string.IsNullOrEmpty(_clientFilePath))
+            if (string.IsNullOrEmpty(_userFilePath))
             {
-                MessageBox.Show("Please select a client Excel file.", "File Required", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("Please select a user Excel/CSV file.", "File Required", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             btnPreview.IsEnabled = false;
             btnImport.IsEnabled = false;
-            UpdateStatus("Reading Excel file...");
+            btnExport.IsEnabled = false;
+            UpdateStatus("Reading file...");
 
             try
             {
-                var importService = new ClientImportService(txtConnectionString.Text, UpdateStatus);
+                var importService = new UserImportService(txtConnectionString.Text, UpdateStatus);
 
                 await Task.Run(() =>
                 {
-                    _excelData = importService.ReadExcelData(_clientFilePath);
-                    Dispatcher.Invoke(() => UpdateStatus($"Read {_excelData.Count} records from Excel."));
+                    _excelData = importService.ReadExcelData(_userFilePath);
+                    Dispatcher.Invoke(() => UpdateStatus($"Read {_excelData.Count} records from file."));
 
                     _processedData = importService.ProcessExcelData(_excelData);
-                    Dispatcher.Invoke(() => UpdateStatus($"Processed {_processedData.Count} client records."));
+                    Dispatcher.Invoke(() => UpdateStatus($"Processed {_processedData.Count} user records."));
 
                     Dispatcher.Invoke(() =>
                     {
                         UpdateStatus("═══════════════════════════════════════════════════════");
-                        UpdateStatus($"📊 CLIENT PREVIEW SUMMARY:");
+                        UpdateStatus($"📊 USER PREVIEW SUMMARY:");
                         UpdateStatus($"═══════════════════════════════════════════════════════");
 
                         // Basic counts
-                        UpdateStatus($"📁 EXCEL DATA:");
-                        UpdateStatus($"   Total Excel records: {_excelData.Count}");
-                        UpdateStatus($"   Processed clients: {_processedData.Count}");
+                        UpdateStatus($"📁 FILE DATA:");
+                        UpdateStatus($"   Total records: {_excelData.Count}");
+                        UpdateStatus($"   Processed users: {_processedData.Count}");
 
-                        // Client type breakdown
-                        int companies = _processedData.Count(p => p.ClientType == "Company");
-                        int individuals = _processedData.Count(p => p.ClientType == "Individual");
+                        // Duplicate analysis (by Email)
+                        int duplicates = _processedData.Count(p => p.IsDuplicate);
+                        int newUsers = _processedData.Count(p => !p.IsDuplicate);
 
                         UpdateStatus($"");
-                        UpdateStatus($"👥 CLIENT TYPES:");
-                        UpdateStatus($"   Individuals: {individuals}");
-                        UpdateStatus($"   Companies: {companies}");
+                        UpdateStatus($"🔍 DUPLICATE CHECK (by Email):");
+                        UpdateStatus($"   New users (will be imported): {newUsers}");
+                        UpdateStatus($"   Duplicates found (same email in DB): {duplicates}");
 
                         // Data quality
-                        int withEmail = _processedData.Count(p => !string.IsNullOrEmpty(p.OriginalData?.FirstEmailAddress));
-                        int withDOB = _processedData.Count(p => p.OriginalData?.DateOfBirth.HasValue == true);
-                        int withPhone = _processedData.Count(p => !string.IsNullOrEmpty(p.OriginalData?.PrimaryContactNumber));
-                        int withAddress = _processedData.Count(p => !string.IsNullOrEmpty(p.OriginalData?.TownCity));
+                        int withEmail = _processedData.Count(p => !string.IsNullOrEmpty(p.OriginalData?.Email));
+                        int withoutEmail = _processedData.Count(p => string.IsNullOrEmpty(p.OriginalData?.Email));
+                        int withUserCode = _processedData.Count(p => !string.IsNullOrEmpty(p.OriginalData?.UserCode));
+                        int withPhone = _processedData.Count(p => !string.IsNullOrEmpty(p.OriginalData?.Mobile) || !string.IsNullOrEmpty(p.OriginalData?.HomePhone));
                         int withTitle = _processedData.Count(p => p.TitleId.HasValue);
 
                         UpdateStatus($"");
                         UpdateStatus($"📋 DATA QUALITY:");
+                        UpdateStatus($"   With Email: {withEmail} / {_processedData.Count} (used for duplicate check)");
+                        if (withoutEmail > 0)
+                        {
+                            UpdateStatus($"   ⚠️ WITHOUT Email: {withoutEmail} (cannot check duplicates!)");
+                        }
+                        UpdateStatus($"   With UserCode/Initials: {withUserCode} / {_processedData.Count}");
                         UpdateStatus($"   With Title: {withTitle} / {_processedData.Count}");
-                        UpdateStatus($"   With Email: {withEmail} / {_processedData.Count}");
-                        UpdateStatus($"   With DOB: {withDOB} / {_processedData.Count}");
                         UpdateStatus($"   With Phone: {withPhone} / {_processedData.Count}");
-                        UpdateStatus($"   With Town/City: {withAddress} / {_processedData.Count}");
 
-                        // Title breakdown
-                        var titleGroups = _processedData
-                            .Where(p => p.TitleId.HasValue)
-                            .GroupBy(p => p.TitleId)
-                            .Select(g => new { TitleId = g.Key, Count = g.Count() })
-                            .OrderByDescending(x => x.Count)
-                            .ToList();
-
-                        if (titleGroups.Any())
+                        // Show duplicate details
+                        if (duplicates > 0)
                         {
                             UpdateStatus($"");
-                            UpdateStatus($"📝 TITLES:");
-                            foreach (var t in titleGroups)
+                            UpdateStatus($"⚠️ DUPLICATES FOUND:");
+                            foreach (var dup in _processedData.Where(p => p.IsDuplicate).Take(10))
                             {
-                                var titleName = GetTitleName(t.TitleId);
-                                UpdateStatus($"   {titleName}: {t.Count}");
+                                UpdateStatus($"   • {dup.OriginalData?.FullName} - {dup.DuplicateReason}");
+                            }
+                            if (duplicates > 10)
+                            {
+                                UpdateStatus($"   ... and {duplicates - 10} more");
                             }
                         }
 
-                        // Sample of first 5 clients
-                        UpdateStatus($"");
-                        UpdateStatus($"📄 SAMPLE CLIENTS (first 5):");
-                        foreach (var client in _processedData.Take(5))
+                        // Sample of first 5 new users
+                        var newUsersList = _processedData.Where(p => !p.IsDuplicate).Take(5).ToList();
+                        if (newUsersList.Any())
                         {
-                            var name = client.OriginalData?.ClientName ?? "Unknown";
-                            var type = client.ClientType;
-                            UpdateStatus($"   • {name} ({type})");
-                        }
-
-                        if (_processedData.Count > 5)
-                        {
-                            UpdateStatus($"   ... and {_processedData.Count - 5} more");
+                            UpdateStatus($"");
+                            UpdateStatus($"📄 SAMPLE NEW USERS (first 5):");
+                            foreach (var user in newUsersList)
+                            {
+                                var name = user.OriginalData?.FullName ?? "Unknown";
+                                var code = user.OriginalData?.UserCode ?? "No Code";
+                                UpdateStatus($"   • {name} (Code: {code})");
+                            }
+                            if (newUsers > 5)
+                            {
+                                UpdateStatus($"   ... and {newUsers - 5} more");
+                            }
                         }
 
                         UpdateStatus($"═══════════════════════════════════════════════════════");
@@ -190,8 +193,16 @@ namespace LeapMergeDoc.Pages
                 return;
             }
 
+            bool skipDuplicates = chkSkipDuplicates.IsChecked == true;
+            int newUsersCount = _processedData.Count(p => !p.IsDuplicate);
+            int duplicatesCount = _processedData.Count(p => p.IsDuplicate);
+
+            string message = skipDuplicates
+                ? $"Are you sure you want to import {newUsersCount} new users to the database?\n\n{duplicatesCount} duplicates will be skipped."
+                : $"Are you sure you want to import {_processedData.Count} users to the database?\n\n⚠️ WARNING: {duplicatesCount} duplicates will be imported (may cause errors)!";
+
             var result = MessageBox.Show(
-                $"Are you sure you want to import {_processedData.Count} clients to the database?",
+                message,
                 "Confirm Import",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Question);
@@ -204,27 +215,29 @@ namespace LeapMergeDoc.Pages
 
             btnPreview.IsEnabled = false;
             btnImport.IsEnabled = false;
-            UpdateStatus("Starting client import...");
+            btnExport.IsEnabled = false;
+            UpdateStatus("Starting user import...");
 
             try
             {
-                var importService = new ClientImportService(txtConnectionString.Text, UpdateStatus);
+                var importService = new UserImportService(txtConnectionString.Text, UpdateStatus);
 
                 await Task.Run(() =>
                 {
-                    var (success, errors) = importService.ImportToDatabase(_processedData);
+                    var (success, skipped, errors) = importService.ImportToDatabase(_processedData, skipDuplicates);
 
                     Dispatcher.Invoke(() =>
                     {
                         UpdateStatus("═══════════════════════════════════════");
                         UpdateStatus($"📊 IMPORT COMPLETE:");
                         UpdateStatus($"   ✅ Successfully imported: {success}");
+                        UpdateStatus($"   ⏭️ Skipped (duplicates): {skipped}");
                         UpdateStatus($"   ❌ Errors: {errors}");
                         UpdateStatus("═══════════════════════════════════════");
                     });
                 });
 
-                MessageBox.Show("Client import completed successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("User import completed successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
@@ -235,6 +248,7 @@ namespace LeapMergeDoc.Pages
             {
                 btnPreview.IsEnabled = true;
                 btnImport.IsEnabled = true;
+                btnExport.IsEnabled = true;
             }
         }
 
@@ -246,12 +260,12 @@ namespace LeapMergeDoc.Pages
                 return;
             }
 
-            var saveDialog = new Microsoft.Win32.SaveFileDialog
+            var saveDialog = new SaveFileDialog
             {
-                Title = "Export Clients to Excel",
+                Title = "Export Users to Excel",
                 Filter = "Excel Files (*.xlsx)|*.xlsx",
                 DefaultExt = ".xlsx",
-                FileName = $"ClientExport_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx"
+                FileName = $"UserExport_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx"
             };
 
             if (saveDialog.ShowDialog() != true)
@@ -263,33 +277,32 @@ namespace LeapMergeDoc.Pages
             btnPreview.IsEnabled = false;
             btnImport.IsEnabled = false;
             btnExport.IsEnabled = false;
-            UpdateStatus("Starting client export...");
+            UpdateStatus("Starting user export...");
 
             try
             {
-                var importService = new ClientImportService(txtConnectionString.Text, UpdateStatus);
+                var importService = new UserImportService(txtConnectionString.Text, UpdateStatus);
 
                 await Task.Run(() =>
                 {
-                    // Export with separate worksheets for Individuals and Companies
-                    importService.ExportToExcelSeparated(_processedData, saveDialog.FileName);
+                    importService.ExportToExcel(_processedData, saveDialog.FileName);
 
                     Dispatcher.Invoke(() =>
                     {
-                        int companies = _processedData.Count(p => p.ClientType == "Company");
-                        int individuals = _processedData.Count(p => p.ClientType == "Individual");
+                        int duplicates = _processedData.Count(p => p.IsDuplicate);
+                        int newUsers = _processedData.Count(p => !p.IsDuplicate);
 
                         UpdateStatus("═══════════════════════════════════════");
                         UpdateStatus($"📊 EXPORT COMPLETE:");
-                        UpdateStatus($"   Total clients: {_processedData.Count}");
-                        UpdateStatus($"   Individuals: {individuals}");
-                        UpdateStatus($"   Companies: {companies}");
+                        UpdateStatus($"   Total users: {_processedData.Count}");
+                        UpdateStatus($"   New users: {newUsers}");
+                        UpdateStatus($"   Duplicates: {duplicates}");
                         UpdateStatus($"   File: {saveDialog.FileName}");
                         UpdateStatus("═══════════════════════════════════════");
                     });
                 });
 
-                MessageBox.Show($"Exported {_processedData.Count} clients successfully!\n\nFile: {saveDialog.FileName}", 
+                MessageBox.Show($"Exported {_processedData.Count} users successfully!\n\nFile: {saveDialog.FileName}",
                     "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
@@ -308,10 +321,7 @@ namespace LeapMergeDoc.Pages
         private async void BtnTruncate_Click(object sender, RoutedEventArgs e)
         {
             var result = MessageBox.Show(
-                "⚠️ WARNING: This will DELETE ALL DATA from the following tables:\n\n" +
-                "• tbl_client_individual\n" +
-                "• tbl_client_company\n" +
-                "• tbl_client\n\n" +
+                "⚠️ WARNING: This will DELETE ALL DATA from tbl_user!\n\n" +
                 "This action CANNOT be undone!\n\n" +
                 "Are you sure you want to proceed?",
                 "Confirm Truncate",
@@ -325,7 +335,7 @@ namespace LeapMergeDoc.Pages
             }
 
             var result2 = MessageBox.Show(
-                "FINAL CONFIRMATION: All client data will be permanently deleted.\n\n" +
+                "FINAL CONFIRMATION: All user data will be permanently deleted.\n\n" +
                 "Click Yes to confirm.",
                 "Final Confirmation",
                 MessageBoxButton.YesNo,
@@ -338,15 +348,15 @@ namespace LeapMergeDoc.Pages
             }
 
             btnTruncate.IsEnabled = false;
-            UpdateStatus("Starting client data truncation...");
+            UpdateStatus("Starting user data truncation...");
 
             try
             {
-                var importService = new ClientImportService(txtConnectionString.Text, UpdateStatus);
+                var importService = new UserImportService(txtConnectionString.Text, UpdateStatus);
 
                 await Task.Run(() =>
                 {
-                    var (rowsDeleted, message) = importService.TruncateClientData();
+                    var (rowsDeleted, message) = importService.TruncateUserData();
 
                     Dispatcher.Invoke(() =>
                     {
@@ -357,7 +367,7 @@ namespace LeapMergeDoc.Pages
                     });
                 });
 
-                MessageBox.Show("Client data truncated successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("User data truncated successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
@@ -368,26 +378,6 @@ namespace LeapMergeDoc.Pages
             {
                 btnTruncate.IsEnabled = true;
             }
-        }
-
-        private string GetTitleName(int? titleId)
-        {
-            if (!titleId.HasValue) return "Unknown";
-
-            var titleNames = new Dictionary<int, string>
-            {
-                { 1, "Mr" },
-                { 2, "Mrs" },
-                { 3, "Miss" },
-                { 4, "Dr" },
-                { 5, "Prof" },
-                { 6, "Ms" },
-                { 7, "Master" },
-                { 8, "Mx" },
-                { 9, "Rev" }
-            };
-
-            return titleNames.TryGetValue(titleId.Value, out var name) ? name : $"Title {titleId}";
         }
     }
 }

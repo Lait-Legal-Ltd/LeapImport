@@ -60,7 +60,10 @@
             <TabItem Header="👥 Client Import">
                 <Frame Source="Pages/ClientImportPage.xaml" NavigationUIVisibility="Hidden"/>
             </TabItem>
-            <TabItem Header="📇 Contact Import">
+            <TabItem Header="� User Import">
+                <Frame Source="Pages/UserImportPage.xaml" NavigationUIVisibility="Hidden"/>
+            </TabItem>
+            <TabItem Header="�📇 Contact Import">
                 <Frame Source="Pages/ContactImportPage.xaml" NavigationUIVisibility="Hidden"/>
             </TabItem>
             <TabItem Header="📒 Journal Entry">

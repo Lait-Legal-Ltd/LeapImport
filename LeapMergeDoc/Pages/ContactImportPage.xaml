@@ -40,7 +40,7 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBox x:Name="txtConnectionString" 
-                                     Text="Server=localhost;Database=customerdbv1;Uid=root;Pwd=;" 
+                                     Text="Server=localhost;Database=nml-live;Uid=root;Pwd=;" 
                                      Background="#3d3d3d" Foreground="White" BorderThickness="0" Padding="12" FontSize="12"/>
                             <Button Grid.Column="1" Content="🔗 Test Connection" Click="TestConnection_Click" 
                                     Style="{StaticResource ModernButton}" Background="#2196F3" Margin="10,0,0,0"/>

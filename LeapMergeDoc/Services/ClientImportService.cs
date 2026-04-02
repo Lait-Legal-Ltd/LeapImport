@@ -94,11 +94,262 @@ namespace LeapMergeDoc.Services
 
         public List<ExcelRowData> ReadExcelData(string filePath)
         {
+            var extension = Path.GetExtension(filePath).ToLower();
+            
+            if (extension == ".csv")
+            {
+                return ReadCsvData(filePath);
+            }
+            
+            return ReadExcelFileData(filePath);
+        }
+
+        private List<ExcelRowData> ReadCsvData(string filePath)
+        {
+            var data = new List<ExcelRowData>();
+            var lines = File.ReadAllLines(filePath);
+
+            if (lines.Length < 2)
+            {
+                _logAction("CSV file is empty or has no data rows.");
+                return data;
+            }
+
+            // Parse headers
+            var headers = ParseCsvLine(lines[0]);
+            _logAction($"Found {lines.Length - 1} data rows in CSV file.");
+            _logAction($"Headers: {string.Join(", ", headers.Take(10))}...");
+
+            // Detect format
+            bool isNewFormat = headers.Any(h => h.Equals("Forename", StringComparison.OrdinalIgnoreCase) ||
+                                                h.Equals("Surname", StringComparison.OrdinalIgnoreCase));
+
+            if (isNewFormat)
+            {
+                _logAction("Detected new CSV format (Forename/Surname columns)");
+            }
+
+            // Parse data rows
+            for (int i = 1; i < lines.Length; i++)
+            {
+                var values = ParseCsvLine(lines[i]);
+                var rowData = new ExcelRowData();
+
+                for (int col = 0; col < Math.Min(headers.Count, values.Count); col++)
+                {
+                    var cellValue = values[col]?.Trim() ?? "";
+                    var header = headers[col].ToLower().Trim();
+
+                    MapCellToRowData(rowData, header, cellValue);
+                }
+
+                // For new format, build ClientName from parts
+                if (isNewFormat)
+                {
+                    if (!string.IsNullOrEmpty(rowData.Forename))
+                    {
+                        rowData.ClientName = string.Join(" ", new[] { rowData.Title, rowData.Forename, rowData.Surname }
+                            .Where(s => !string.IsNullOrWhiteSpace(s)));
+                    }
+                    else if (!string.IsNullOrEmpty(rowData.Surname))
+                    {
+                        rowData.ClientName = rowData.Surname;
+                    }
+                }
+
+                // Add row if it has valid data
+                if (!string.IsNullOrEmpty(rowData.ClientName) ||
+                    !string.IsNullOrEmpty(rowData.Surname) ||
+                    !string.IsNullOrEmpty(rowData.Forename))
+                {
+                    data.Add(rowData);
+                }
+            }
+
+            return data;
+        }
+
+        private List<string> ParseCsvLine(string line)
+        {
+            var result = new List<string>();
+            bool inQuotes = false;
+            var currentValue = new System.Text.StringBuilder();
+
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+
+                if (c == '"')
+                {
+                    if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
+                    {
+                        // Escaped quote
+                        currentValue.Append('"');
+                        i++;
+                    }
+                    else
+                    {
+                        inQuotes = !inQuotes;
+                    }
+                }
+                else if (c == ',' && !inQuotes)
+                {
+                    result.Add(currentValue.ToString());
+                    currentValue.Clear();
+                }
+                else
+                {
+                    currentValue.Append(c);
+                }
+            }
+
+            result.Add(currentValue.ToString());
+            return result;
+        }
+
+        private void MapCellToRowData(ExcelRowData rowData, string header, string cellValue)
+        {
+            switch (header)
+            {
+                // New format mappings
+                case "title":
+                    rowData.Title = cellValue;
+                    break;
+                case "initials":
+                    rowData.Initials = cellValue;
+                    break;
+                case "forename":
+                    rowData.Forename = cellValue;
+                    rowData.GivenNames = cellValue;
+                    break;
+                case "surname":
+                    rowData.Surname = cellValue;
+                    rowData.LastNames = cellValue;
+                    break;
+                case "house":
+                    rowData.House = cellValue;
+                    break;
+                case "area":
+                    rowData.Area = cellValue;
+                    break;
+                case "town":
+                    rowData.TownCity = cellValue;
+                    break;
+                case "post code":
+                    rowData.Postcode = cellValue;
+                    break;
+                case "email":
+                    rowData.FirstEmailAddress = cellValue;
+                    break;
+                case "phone no":
+                    rowData.Phone = cellValue;
+                    break;
+
+                // Original format mappings
+                case "short name":
+                    rowData.ShortName = cellValue;
+                    break;
+                case "client name":
+                    rowData.ClientName = cellValue;
+                    ExtractTitleAndNames(rowData, cellValue);
+                    break;
+                case "first email address":
+                    rowData.FirstEmailAddress = cellValue;
+                    break;
+                case "date of birth":
+                    if (DateTime.TryParse(cellValue, out DateTime dob))
+                        rowData.DateOfBirth = dob;
+                    break;
+                case "building name":
+                    rowData.BuildingName = cellValue;
+                    break;
+                case "street level":
+                    rowData.StreetLevel = cellValue;
+                    break;
+                case "number":
+                    rowData.Number = cellValue;
+                    break;
+                case "street":
+                    rowData.Street = cellValue;
+                    break;
+                case "town/city":
+                    rowData.TownCity = cellValue;
+                    break;
+                case "county":
+                    rowData.County = cellValue;
+                    break;
+                case "postcode":
+                    rowData.Postcode = cellValue;
+                    break;
+                case "country":
+                    rowData.Country = cellValue;
+                    break;
+                case "phone":
+                    rowData.Phone = cellValue;
+                    break;
+                case "home":
+                    rowData.Home = cellValue;
+                    break;
+                case "work":
+                    rowData.Work = cellValue;
+                    break;
+                case "mobile":
+                    rowData.Mobile = cellValue;
+                    break;
+                case "fax":
+                    rowData.Fax = cellValue;
+                    break;
+                case "pobox instructions":
+                    rowData.POBoxInstructions = cellValue;
+                    break;
+                case "pobox type":
+                    rowData.POBoxType = cellValue;
+                    break;
+                case "pobox number":
+                    rowData.POBoxNumber = cellValue;
+                    break;
+                case "pobox town/city":
+                    rowData.POBoxTownCity = cellValue;
+                    break;
+                case "pobox county":
+                    rowData.POBoxCounty = cellValue;
+                    break;
+                case "pobox postcode":
+                    rowData.POBoxPostcode = cellValue;
+                    break;
+                case "dx instructions":
+                    rowData.DxInstructions = cellValue;
+                    break;
+                case "dx number":
+                    rowData.DxNumber = cellValue;
+                    break;
+                case "exchange":
+                    rowData.Exchange = cellValue;
+                    break;
+                case "mkt consent?":
+                    rowData.MktConsent = cellValue?.ToLower() == "yes" || cellValue?.ToLower() == "true" || cellValue == "1";
+                    break;
+            }
+        }
+
+        private List<ExcelRowData> ReadExcelFileData(string filePath)
+        {
             var data = new List<ExcelRowData>();
 
             using (var package = new ExcelPackage(new FileInfo(filePath)))
             {
-                var worksheet = package.Workbook.Worksheets[0];
+                if (package.Workbook.Worksheets.Count == 0)
+                {
+                    throw new Exception("Excel file contains no worksheets.");
+                }
+
+                var worksheet = package.Workbook.Worksheets.First();
+                if (worksheet.Dimension == null)
+                {
+                    _logAction("Worksheet is empty.");
+                    return data;
+                }
+
                 var rowCount = worksheet.Dimension.Rows;
                 var colCount = worksheet.Dimension.Columns;
 
@@ -112,6 +363,15 @@ namespace LeapMergeDoc.Services
 
                 _logAction($"Headers: {string.Join(", ", headers.Take(10))}...");
 
+                // Detect format: new format has "Forename" and "Surname" columns
+                bool isNewFormat = headers.Any(h => h.Equals("Forename", StringComparison.OrdinalIgnoreCase) ||
+                                                    h.Equals("Surname", StringComparison.OrdinalIgnoreCase));
+
+                if (isNewFormat)
+                {
+                    _logAction("Detected new format (Forename/Surname columns)");
+                }
+
                 for (int row = 2; row <= rowCount; row++)
                 {
                     var rowData = new ExcelRowData();
@@ -119,97 +379,31 @@ namespace LeapMergeDoc.Services
                     for (int col = 1; col <= colCount; col++)
                     {
                         var cellValue = worksheet.Cells[row, col].Value?.ToString()?.Trim() ?? "";
-                        var header = headers[col - 1].ToLower();
+                        var header = headers[col - 1].ToLower().Trim();
 
-                        switch (header)
+                        MapCellToRowData(rowData, header, cellValue);
+                    }
+
+                    // For new format, build ClientName from parts
+                    if (isNewFormat)
+                    {
+                        if (!string.IsNullOrEmpty(rowData.Forename))
                         {
-                            case "short name":
-                                rowData.ShortName = cellValue;
-                                break;
-                            case "client name":
-                                rowData.ClientName = cellValue;
-                                ExtractTitleAndNames(rowData, cellValue);
-                                break;
-                            case "first email address":
-                                rowData.FirstEmailAddress = cellValue;
-                                break;
-                            case "date of birth":
-                                if (DateTime.TryParse(cellValue, out DateTime dob))
-                                    rowData.DateOfBirth = dob;
-                                break;
-                            case "building name":
-                                rowData.BuildingName = cellValue;
-                                break;
-                            case "street level":
-                                rowData.StreetLevel = cellValue;
-                                break;
-                            case "number":
-                                rowData.Number = cellValue;
-                                break;
-                            case "street":
-                                rowData.Street = cellValue;
-                                break;
-                            case "town/city":
-                                rowData.TownCity = cellValue;
-                                break;
-                            case "county":
-                                rowData.County = cellValue;
-                                break;
-                            case "postcode":
-                                rowData.Postcode = cellValue;
-                                break;
-                            case "country":
-                                rowData.Country = cellValue;
-                                break;
-                            case "phone":
-                                rowData.Phone = cellValue;
-                                break;
-                            case "home":
-                                rowData.Home = cellValue;
-                                break;
-                            case "work":
-                                rowData.Work = cellValue;
-                                break;
-                            case "mobile":
-                                rowData.Mobile = cellValue;
-                                break;
-                            case "fax":
-                                rowData.Fax = cellValue;
-                                break;
-                            case "pobox instructions":
-                                rowData.POBoxInstructions = cellValue;
-                                break;
-                            case "pobox type":
-                                rowData.POBoxType = cellValue;
-                                break;
-                            case "pobox number":
-                                rowData.POBoxNumber = cellValue;
-                                break;
-                            case "pobox town/city":
-                                rowData.POBoxTownCity = cellValue;
-                                break;
-                            case "pobox county":
-                                rowData.POBoxCounty = cellValue;
-                                break;
-                            case "pobox postcode":
-                                rowData.POBoxPostcode = cellValue;
-                                break;
-                            case "dx instructions":
-                                rowData.DxInstructions = cellValue;
-                                break;
-                            case "dx number":
-                                rowData.DxNumber = cellValue;
-                                break;
-                            case "exchange":
-                                rowData.Exchange = cellValue;
-                                break;
-                            case "mkt consent?":
-                                rowData.MktConsent = cellValue?.ToLower() == "yes" || cellValue?.ToLower() == "true" || cellValue == "1";
-                                break;
+                            // Individual: has forename
+                            rowData.ClientName = string.Join(" ", new[] { rowData.Title, rowData.Forename, rowData.Surname }
+                                .Where(s => !string.IsNullOrWhiteSpace(s)));
+                        }
+                        else if (!string.IsNullOrEmpty(rowData.Surname))
+                        {
+                            // Company: only surname (company name)
+                            rowData.ClientName = rowData.Surname;
                         }
                     }
 
-                    if (!string.IsNullOrEmpty(rowData.ClientName))
+                    // Add row if it has valid data
+                    if (!string.IsNullOrEmpty(rowData.ClientName) || 
+                        !string.IsNullOrEmpty(rowData.Surname) || 
+                        !string.IsNullOrEmpty(rowData.Forename))
                     {
                         data.Add(rowData);
                     }
@@ -228,7 +422,7 @@ namespace LeapMergeDoc.Services
                 var clientData = new ProcessedClientData
                 {
                     OriginalData = row,
-                    ClientType = DetermineClientType(row.LastNames),
+                    ClientType = DetermineClientType(row),
                     TitleId = GetTitleId(row.Title),
                     FkBranchId = 1,
                     FkUserId = 1,
@@ -243,12 +437,33 @@ namespace LeapMergeDoc.Services
             return processedData;
         }
 
-        private string DetermineClientType(string? lastNames)
+        /// <summary>
+        /// Determines client type based on:
+        /// - New format: If Forename exists → Individual, otherwise Company
+        /// - Old format: Check for company keywords like LTD, LIMITED, PLC, etc.
+        /// </summary>
+        private string DetermineClientType(ExcelRowData row)
         {
-            if (string.IsNullOrEmpty(lastNames))
+            // New format: Check Forename field
+            // If Forename has a value, it's an Individual
+            // If only Surname (no Forename), it's a Company
+            if (!string.IsNullOrEmpty(row.Forename))
+            {
+                return "Individual";
+            }
+
+            // If we have Surname but no Forename, it's a Company
+            if (!string.IsNullOrEmpty(row.Surname) && string.IsNullOrEmpty(row.Forename))
+            {
+                return "Company";
+            }
+
+            // Fallback to old format logic for backward compatibility
+            var lastName = row.LastNames;
+            if (string.IsNullOrEmpty(lastName))
                 return "Individual";
 
-            var upperLastNames = lastNames.ToUpper().Trim();
+            var upperLastNames = lastName.ToUpper().Trim();
 
             if (upperLastNames.Contains("LTD") || upperLastNames.Contains("LIMITED") ||
                 upperLastNames.Contains("PLC") || upperLastNames.Contains("LLC") ||
@@ -514,6 +729,188 @@ namespace LeapMergeDoc.Services
                 cmd.Parameters.AddWithValue("@ind_is_active", true);
 
                 cmd.ExecuteNonQuery();
+            }
+        }
+
+        /// <summary>
+        /// Exports processed client data to an Excel file
+        /// </summary>
+        public string ExportToExcel(List<ProcessedClientData> processedData, string outputFilePath)
+        {
+            using (var package = new ExcelPackage())
+            {
+                var worksheet = package.Workbook.Worksheets.Add("Clients");
+
+                // Headers
+                var headers = new[]
+                {
+                    "Client Type", "Title", "Given Names", "Last Name / Company Name",
+                    "Email", "Phone", "Date of Birth",
+                    "Address Line 1", "Address Line 2", "Town/City", "County", "Post Code",
+                    "Mobile", "Home Phone", "Work Phone", "Fax"
+                };
+
+                for (int i = 0; i < headers.Length; i++)
+                {
+                    worksheet.Cells[1, i + 1].Value = headers[i];
+                    worksheet.Cells[1, i + 1].Style.Font.Bold = true;
+                    worksheet.Cells[1, i + 1].Style.Fill.PatternType = OfficeOpenXml.Style.ExcelFillStyle.Solid;
+                    worksheet.Cells[1, i + 1].Style.Fill.BackgroundColor.SetColor(System.Drawing.Color.LightBlue);
+                }
+
+                // Data rows
+                int row = 2;
+                foreach (var item in processedData)
+                {
+                    var data = item.OriginalData;
+
+                    worksheet.Cells[row, 1].Value = item.ClientType;
+                    worksheet.Cells[row, 2].Value = data?.Title ?? "";
+                    worksheet.Cells[row, 3].Value = data?.GivenNames ?? "";
+                    worksheet.Cells[row, 4].Value = item.ClientType == "Company" ? data?.ClientName : data?.LastNames;
+                    worksheet.Cells[row, 5].Value = data?.FirstEmailAddress ?? "";
+                    worksheet.Cells[row, 6].Value = data?.PrimaryContactNumber ?? "";
+                    worksheet.Cells[row, 7].Value = data?.DateOfBirth?.ToString("yyyy-MM-dd") ?? "";
+                    worksheet.Cells[row, 8].Value = data?.AddressLine1 ?? "";
+                    worksheet.Cells[row, 9].Value = data?.AddressLine2 ?? "";
+                    worksheet.Cells[row, 10].Value = data?.TownCity ?? "";
+                    worksheet.Cells[row, 11].Value = data?.County ?? "";
+                    worksheet.Cells[row, 12].Value = data?.Postcode ?? "";
+                    worksheet.Cells[row, 13].Value = data?.Mobile ?? "";
+                    worksheet.Cells[row, 14].Value = data?.Home ?? "";
+                    worksheet.Cells[row, 15].Value = data?.Work ?? "";
+                    worksheet.Cells[row, 16].Value = data?.Fax ?? "";
+
+                    row++;
+                }
+
+                // Auto-fit columns
+                worksheet.Cells[worksheet.Dimension.Address].AutoFitColumns();
+
+                // Save file
+                package.SaveAs(new FileInfo(outputFilePath));
+
+                _logAction($"Exported {processedData.Count} clients to: {outputFilePath}");
+                return outputFilePath;
+            }
+        }
+
+        /// <summary>
+        /// Exports processed client data to separate worksheets for Individuals and Companies
+        /// </summary>
+        public string ExportToExcelSeparated(List<ProcessedClientData> processedData, string outputFilePath)
+        {
+            using (var package = new ExcelPackage())
+            {
+                // Create Individual clients worksheet
+                var individuals = processedData.Where(p => p.ClientType == "Individual").ToList();
+                CreateClientWorksheet(package, "Individuals", individuals, false);
+
+                // Create Company clients worksheet
+                var companies = processedData.Where(p => p.ClientType == "Company").ToList();
+                CreateClientWorksheet(package, "Companies", companies, true);
+
+                // Create Summary worksheet
+                var summarySheet = package.Workbook.Worksheets.Add("Summary");
+                summarySheet.Cells[1, 1].Value = "Export Summary";
+                summarySheet.Cells[1, 1].Style.Font.Bold = true;
+                summarySheet.Cells[1, 1].Style.Font.Size = 14;
+
+                summarySheet.Cells[3, 1].Value = "Total Clients:";
+                summarySheet.Cells[3, 2].Value = processedData.Count;
+                summarySheet.Cells[4, 1].Value = "Individuals:";
+                summarySheet.Cells[4, 2].Value = individuals.Count;
+                summarySheet.Cells[5, 1].Value = "Companies:";
+                summarySheet.Cells[5, 2].Value = companies.Count;
+                summarySheet.Cells[6, 1].Value = "Export Date:";
+                summarySheet.Cells[6, 2].Value = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+                summarySheet.Cells[summarySheet.Dimension.Address].AutoFitColumns();
+
+                // Save file
+                package.SaveAs(new FileInfo(outputFilePath));
+
+                _logAction($"Exported {individuals.Count} individuals and {companies.Count} companies to: {outputFilePath}");
+                return outputFilePath;
+            }
+        }
+
+        private void CreateClientWorksheet(ExcelPackage package, string sheetName, List<ProcessedClientData> clients, bool isCompany)
+        {
+            var worksheet = package.Workbook.Worksheets.Add(sheetName);
+
+            string[] headers;
+            if (isCompany)
+            {
+                headers = new[]
+                {
+                    "Company Name", "Email", "Phone", "Fax",
+                    "Address Line 1", "Address Line 2", "Town/City", "County", "Post Code"
+                };
+            }
+            else
+            {
+                headers = new[]
+                {
+                    "Title", "Given Names", "Last Name", "Email", "Date of Birth",
+                    "Phone", "Mobile", "Home Phone", "Work Phone",
+                    "Address Line 1", "Address Line 2", "Town/City", "County", "Post Code"
+                };
+            }
+
+            // Write headers
+            for (int i = 0; i < headers.Length; i++)
+            {
+                worksheet.Cells[1, i + 1].Value = headers[i];
+                worksheet.Cells[1, i + 1].Style.Font.Bold = true;
+                worksheet.Cells[1, i + 1].Style.Fill.PatternType = OfficeOpenXml.Style.ExcelFillStyle.Solid;
+                worksheet.Cells[1, i + 1].Style.Fill.BackgroundColor.SetColor(
+                    isCompany ? System.Drawing.Color.LightGreen : System.Drawing.Color.LightBlue);
+            }
+
+            // Write data
+            int row = 2;
+            foreach (var item in clients)
+            {
+                var data = item.OriginalData;
+
+                if (isCompany)
+                {
+                    worksheet.Cells[row, 1].Value = data?.ClientName ?? data?.Surname ?? "";
+                    worksheet.Cells[row, 2].Value = data?.FirstEmailAddress ?? "";
+                    worksheet.Cells[row, 3].Value = data?.PrimaryContactNumber ?? "";
+                    worksheet.Cells[row, 4].Value = data?.Fax ?? "";
+                    worksheet.Cells[row, 5].Value = data?.AddressLine1 ?? "";
+                    worksheet.Cells[row, 6].Value = data?.AddressLine2 ?? "";
+                    worksheet.Cells[row, 7].Value = data?.TownCity ?? "";
+                    worksheet.Cells[row, 8].Value = data?.County ?? "";
+                    worksheet.Cells[row, 9].Value = data?.Postcode ?? "";
+                }
+                else
+                {
+                    worksheet.Cells[row, 1].Value = data?.Title ?? "";
+                    worksheet.Cells[row, 2].Value = data?.GivenNames ?? "";
+                    worksheet.Cells[row, 3].Value = data?.LastNames ?? "";
+                    worksheet.Cells[row, 4].Value = data?.FirstEmailAddress ?? "";
+                    worksheet.Cells[row, 5].Value = data?.DateOfBirth?.ToString("yyyy-MM-dd") ?? "";
+                    worksheet.Cells[row, 6].Value = data?.PrimaryContactNumber ?? "";
+                    worksheet.Cells[row, 7].Value = data?.Mobile ?? "";
+                    worksheet.Cells[row, 8].Value = data?.Home ?? "";
+                    worksheet.Cells[row, 9].Value = data?.Work ?? "";
+                    worksheet.Cells[row, 10].Value = data?.AddressLine1 ?? "";
+                    worksheet.Cells[row, 11].Value = data?.AddressLine2 ?? "";
+                    worksheet.Cells[row, 12].Value = data?.TownCity ?? "";
+                    worksheet.Cells[row, 13].Value = data?.County ?? "";
+                    worksheet.Cells[row, 14].Value = data?.Postcode ?? "";
+                }
+
+                row++;
+            }
+
+            // Auto-fit columns
+            if (worksheet.Dimension != null)
+            {
+                worksheet.Cells[worksheet.Dimension.Address].AutoFitColumns();
             }
         }
     }

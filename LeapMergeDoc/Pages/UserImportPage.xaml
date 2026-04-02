@@ -1,11 +1,11 @@
-<Page x:Class="LeapMergeDoc.Pages.DatabaseImportPage"
+<Page x:Class="LeapMergeDoc.Pages.UserImportPage"
       xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
       xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
       mc:Ignorable="d" 
       d:DesignHeight="600" d:DesignWidth="700"
-      Title="Database Import"
+      Title="User Import"
       Background="#F5F5F5">
     
     <Page.Resources>
@@ -129,15 +129,16 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
         
         <!-- Header -->
         <StackPanel Grid.Row="0" Margin="0,0,0,20">
-            <TextBlock Text="Database Import" 
+            <TextBlock Text="User Import" 
                        FontSize="28" FontWeight="Bold" 
                        Foreground="#1F2937"/>
-            <TextBlock Text="Upload merged Excel file and import cases to database" 
+            <TextBlock Text="Import users/fee earners from Excel/CSV file to database (duplicate check by Email)" 
                        FontSize="14" Foreground="#6B7280" Margin="0,8,0,0"/>
         </StackPanel>
         
@@ -168,8 +169,8 @@
             </Grid>
         </Border>
         
-        <!-- Merged Excel File Selection -->
-        <Border Grid.Row="2" Background="White" CornerRadius="12" Padding="20" Margin="0,0,0,20">
+        <!-- User Excel File Selection -->
+        <Border Grid.Row="2" Background="White" CornerRadius="12" Padding="20" Margin="0,0,0,12">
             <Border.Effect>
                 <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.1"/>
             </Border.Effect>
@@ -179,36 +180,52 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                    <TextBlock Text="Merged Excel File" FontWeight="SemiBold" FontSize="15" Foreground="#374151"/>
-                    <TextBlock x:Name="txtMergedFilePath" Text="No file selected" 
+                    <TextBlock Text="User Excel/CSV File" FontWeight="SemiBold" FontSize="15" Foreground="#374151"/>
+                    <TextBlock x:Name="txtUserFilePath" Text="No file selected" 
                                FontSize="12" Foreground="#9CA3AF" Margin="0,5,0,0" 
                                TextTrimming="CharacterEllipsis"/>
                 </StackPanel>
                 <Button Grid.Column="1" Content="📁 Browse..." 
                         Style="{StaticResource FileSelectButton}"
-                        Click="BtnSelectMergedFile_Click"/>
+                        Click="BtnSelectUserFile_Click"/>
             </Grid>
+        </Border>
+
+        <!-- Options -->
+        <Border Grid.Row="3" Background="White" CornerRadius="12" Padding="20" Margin="0,0,0,20">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.1"/>
+            </Border.Effect>
+            <StackPanel>
+                <TextBlock Text="Import Options" FontWeight="SemiBold" FontSize="15" Foreground="#374151" Margin="0,0,0,10"/>
+                <CheckBox x:Name="chkSkipDuplicates" Content="Skip duplicate users (same Email)" IsChecked="True" Margin="0,5,0,0"/>
+            </StackPanel>
         </Border>
         
         <!-- Action Buttons -->
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,20">
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,20">
             <Button x:Name="btnPreview" Content="👁 Preview Data" 
                     Style="{StaticResource ModernButton}"
                     IsEnabled="False"
                     Margin="0,0,10,0"
                     Click="BtnPreview_Click"/>
-            <Button x:Name="btnImport" Content="🚀 Import to Database" 
+            <Button x:Name="btnImport" Content="🚀 Import Users" 
                     Style="{StaticResource SuccessButton}"
                     IsEnabled="False"
                     Margin="0,0,10,0"
                     Click="BtnImport_Click"/>
-            <Button x:Name="btnTruncate" Content="🗑️ Truncate Data" 
+            <Button x:Name="btnExport" Content="📊 Export to Excel" 
+                    Style="{StaticResource ModernButton}"
+                    IsEnabled="False"
+                    Margin="0,0,10,0"
+                    Click="BtnExport_Click"/>
+            <Button x:Name="btnTruncate" Content="🗑️ Truncate Users" 
                     Style="{StaticResource DangerButton}"
                     Click="BtnTruncate_Click"/>
         </StackPanel>
         
         <!-- Status Area -->
-        <Border Grid.Row="4" Background="White" CornerRadius="12" Padding="20">
+        <Border Grid.Row="5" Background="White" CornerRadius="12" Padding="20">
             <Border.Effect>
                 <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.1"/>
             </Border.Effect>
@@ -219,7 +236,7 @@
                 </Grid.RowDefinitions>
                 <TextBlock Grid.Row="0" Text="Status &amp; Logs" FontWeight="SemiBold" FontSize="15" Foreground="#374151" Margin="0,0,0,10"/>
                 <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                    <TextBlock x:Name="txtStatus" Text="Ready. Select a merged Excel file to begin." 
+                    <TextBlock x:Name="txtStatus" Text="Ready. Select a user Excel/CSV file to begin." 
                                FontSize="13" Foreground="#6B7280" TextWrapping="Wrap"/>
                 </ScrollViewer>
             </Grid>

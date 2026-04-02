@@ -53,8 +53,8 @@ namespace LeapMergeDoc.Pages
         {
             var dialog = new OpenFileDialog
             {
-                Title = "Select Merged Excel File",
-                Filter = "Excel Files (*.xlsx;*.xls)|*.xlsx;*.xls|All Files (*.*)|*.*",
+                Title = "Select Case Data File",
+                Filter = "Excel/CSV Files (*.xlsx;*.xls;*.csv)|*.xlsx;*.xls;*.csv|Excel Files (*.xlsx;*.xls)|*.xlsx;*.xls|CSV Files (*.csv)|*.csv|All Files (*.*)|*.*",
                 FilterIndex = 1
             };
 
@@ -64,7 +64,9 @@ namespace LeapMergeDoc.Pages
                 txtMergedFilePath.Text = _mergedFilePath;
                 txtMergedFilePath.Foreground = System.Windows.Media.Brushes.DarkGreen;
                 btnPreview.IsEnabled = true;
-                UpdateStatus($"File selected: {Path.GetFileName(_mergedFilePath)}");
+                var ext = Path.GetExtension(_mergedFilePath).ToLower();
+                var fileType = ext == ".csv" ? "CSV" : "Excel";
+                UpdateStatus($"{fileType} file selected: {Path.GetFileName(_mergedFilePath)}");
             }
         }
 
@@ -78,7 +80,7 @@ namespace LeapMergeDoc.Pages
 
             btnPreview.IsEnabled = false;
             btnImport.IsEnabled = false;
-            UpdateStatus("Reading Excel file...");
+            UpdateStatus("Reading data file...");
 
             try
             {
@@ -87,7 +89,7 @@ namespace LeapMergeDoc.Pages
                 await Task.Run(() =>
                 {
                     _excelData = importService.ReadExcelData(_mergedFilePath);
-                    Dispatcher.Invoke(() => UpdateStatus($"Read {_excelData.Count} records from Excel."));
+                    Dispatcher.Invoke(() => UpdateStatus($"Read {_excelData.Count} records from file."));
 
                     _processedData = importService.ProcessExcelData(_excelData);
                     Dispatcher.Invoke(() => UpdateStatus($"Processed {_processedData.Count} case records."));
