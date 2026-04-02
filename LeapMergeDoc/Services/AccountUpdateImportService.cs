@@ -1,6 +1,8 @@
 using ClosedXML.Excel;
+using DocumentFormat.OpenXml.Spreadsheet;
 using LeapMergeDoc.Models;
 using MySql.Data.MySqlClient;
+using System.DirectoryServices;
 using System.Globalization;
 using System.IO;
 
@@ -557,9 +559,28 @@ namespace LeapMergeDoc.Services
             }
             else
             {
-                importData.IsFound = false;
-                importData.ValidationError = $"Case not found: {row.CaseReference}";
-                _logAction($"⚠️ Case not found: '{row.CaseReference}'");
+                //importData.IsFound = false;
+                //importData.ValidationError = $"Case not found: {row.CaseReference}";
+                //_logAction($"⚠️ Case not found: '{row.CaseReference}'");
+
+                _logAction($"⚠️ Case not found: '{row.CaseReference}' — auto-creating...");
+                try
+                {
+                    var created = AutoCreateCase(connection, row);
+                    importData.CaseId = created.caseId;
+                    importData.ClientId = created.clientId;
+                    importData.LedgerCardId = created.ledgerCardId;
+                    importData.IsFound = true;
+                    importData.ValidationError = null;
+                    _logAction($"✅ Auto-created case '{row.CaseReference}' (CaseId={created.caseId})");
+                }
+                catch (Exception ex)
+                {
+                    importData.IsFound = false;
+                    importData.IsValid = false;
+                    importData.ValidationError = $"Case not found and auto-create failed: {ex.Message}";
+                    _logAction($"❌ Auto-create failed for '{row.CaseReference}': {ex.Message}");
+                }
             }
 
             // Validate
@@ -567,6 +588,453 @@ namespace LeapMergeDoc.Services
 
             return importData;
         }
+
+        private (int caseId, int clientId, int ledgerCardId) AutoCreateCase( MySqlConnection connection, AccountUpdateExcelData row)
+        {
+            using var transaction = connection.BeginTransaction();
+            try
+            {
+                int clientId = ResolveClientId(connection, transaction, row.ClientName);
+
+
+                ParseCaseReference(
+                    row.CaseReference!,
+                    out int? aopId,
+                    out int? caseTypeId,
+                    out int? caseSubTypeId,
+                    out int caseNumber,
+                    connection,
+                    transaction);
+
+                // ── 3. tbl_case_details_general ─────────────────────────────────────
+                int caseId = InsertCaseDetailsGeneral(
+                    connection, transaction, row, clientId,
+                    aopId, caseTypeId, caseSubTypeId, caseNumber);
+
+
+                // ── 5. tbl_acc_ledger_cards ──────────────────────────────────────────
+                int ledgerCardId = InsertLedgerCard(connection, transaction, caseId, clientId);
+
+                // ── 6. tbl_case_permissions ──────────────────────────────────────────
+                InsertCasePermissions(connection, transaction, caseId);
+
+                // ── 7. tbl_case_clients ──────────────────────────────────────────────
+                InsertCaseClient(connection, transaction, caseId, clientId, row);
+
+                // ── 8. tbl_case_client_greeting ──────────────────────────────────────
+                InsertCaseClientGreeting(connection, transaction, caseId, row.ClientName);
+
+                transaction.Commit();
+                return (caseId, clientId, ledgerCardId);
+            }
+            catch
+            {
+                transaction.Rollback();
+                throw;
+            }
+        }
+
+        private int ResolveClientId(MySqlConnection conn, MySqlTransaction tx, string? clientName)
+        {
+            if (!string.IsNullOrWhiteSpace(clientName))
+            {
+                var name = clientName.Trim();
+
+                // ── 1. Check tbl_client_individual (given_names + last_name) ─────────
+                const string individualSql = @"
+            SELECT fk_client_id
+            FROM tbl_client_individual
+            WHERE LOWER(TRIM(CONCAT(given_names, ' ', last_name))) = LOWER(@fullName)
+               OR LOWER(TRIM(given_names)) = LOWER(@fullName)
+               OR LOWER(TRIM(last_name))   = LOWER(@fullName)
+            LIMIT 1;";
+
+                using (var cmd = new MySqlCommand(individualSql, conn, tx))
+                {
+                    cmd.Parameters.AddWithValue("@fullName", name);
+                    var result = cmd.ExecuteScalar();
+                    if (result != null && result != DBNull.Value)
+                    {
+                        _logAction($"✅ Client matched in tbl_client_individual: '{clientName}'");
+                        return Convert.ToInt32(result);
+                    }
+                }
+
+                // ── 2. Check tbl_client_company (company_name) ───────────────────────
+                const string companySql = @"
+            SELECT fk_client_id
+            FROM tbl_client_company
+            WHERE LOWER(TRIM(company_name)) = LOWER(@fullName)
+            LIMIT 1;";
+
+                using (var cmd = new MySqlCommand(companySql, conn, tx))
+                {
+                    cmd.Parameters.AddWithValue("@fullName", name);
+                    var result = cmd.ExecuteScalar();
+                    if (result != null && result != DBNull.Value)
+                    {
+                        _logAction($"✅ Client matched in tbl_client_company: '{clientName}'");
+                        return Convert.ToInt32(result);
+                    }
+                }
+
+                // ── 3. Check tbl_client_organisation (org_name) ──────────────────────
+                const string orgSql = @"
+            SELECT fk_client_id
+            FROM tbl_client_organisation
+            WHERE LOWER(TRIM(org_name)) = LOWER(@fullName)
+            LIMIT 1;";
+
+                using (var cmd = new MySqlCommand(orgSql, conn, tx))
+                {
+                    cmd.Parameters.AddWithValue("@fullName", name);
+                    var result = cmd.ExecuteScalar();
+                    if (result != null && result != DBNull.Value)
+                    {
+                        _logAction($"✅ Client matched in tbl_client_organisation: '{clientName}'");
+                        return Convert.ToInt32(result);
+                    }
+                }
+            }
+
+            // ── Not found — pick a random existing fk_client_id from any client table ─
+            const string randomSql = @"
+        SELECT fk_client_id FROM (
+            SELECT fk_client_id FROM tbl_client_individual  WHERE fk_client_id IS NOT NULL
+            UNION
+            SELECT fk_client_id FROM tbl_client_company     WHERE fk_client_id IS NOT NULL
+            UNION
+            SELECT fk_client_id FROM tbl_client_organisation WHERE fk_client_id IS NOT NULL
+        ) AS all_clients
+        ORDER BY RAND()
+        LIMIT 1;";
+
+            using (var randomCmd = new MySqlCommand(randomSql, conn, tx))
+            {
+                var randomResult = randomCmd.ExecuteScalar();
+                if (randomResult != null && randomResult != DBNull.Value)
+                {
+                    var randomId = Convert.ToInt32(randomResult);
+                    _logAction($"⚠️ Client '{clientName}' not found — assigned random client id={randomId}");
+                    return randomId;
+                }
+            }
+
+            throw new InvalidOperationException("No clients exist in the database — cannot resolve a client id.");
+        }
+
+        private void ParseCaseReference(
+        string caseRef,
+        out int? aopId,
+        out int? caseTypeId,
+        out int? caseSubTypeId,
+        out int caseNumber,
+        MySqlConnection conn,
+        MySqlTransaction tx)
+        {
+            aopId = null;
+            caseTypeId = null;
+            caseSubTypeId = null;
+            caseNumber = 0;
+
+            // ── Get next unique case_number (MAX + 1) ─────────────────────────────────
+            const string maxCaseNumberSql = @"
+        SELECT COALESCE(MAX(case_number), 0) + 1
+        FROM tbl_case_details_general;";
+
+            using (var cmd = new MySqlCommand(maxCaseNumberSql, conn, tx))
+            {
+                var result = cmd.ExecuteScalar();
+                if (result != null && result != DBNull.Value)
+                    caseNumber = Convert.ToInt32(result);
+            }
+
+            // ── Split reference into segments ─────────────────────────────────────────
+            var parts = caseRef.Split(new[] { '/', '.' }, StringSplitOptions.RemoveEmptyEntries);
+
+            string? apCode = parts.Length >= 2 ? parts[1] : null;
+            string? caseTypeCode = parts.Length >= 3 ? parts[2] : null;
+
+            // ── 1. Lookup aopId by ap_code (parts[1]) ────────────────────────────────
+            if (!string.IsNullOrWhiteSpace(apCode))
+            {
+                const string aopSql = @"
+            SELECT areas_of_practice_id
+            FROM tbl_areas_of_practice
+            WHERE UPPER(TRIM(ap_code)) = UPPER(TRIM(@code))
+              AND (is_active = 1 OR is_active IS NULL)
+            LIMIT 1;";
+
+                using var cmd = new MySqlCommand(aopSql, conn, tx);
+                cmd.Parameters.AddWithValue("@code", apCode);
+                var result = cmd.ExecuteScalar();
+                if (result != null && result != DBNull.Value)
+                {
+                    aopId = Convert.ToInt32(result);
+                    _logAction($"✅ AoP matched by ap_code '{apCode}': aopId={aopId}");
+                }
+            }
+
+            // Not matched → pick a random active aopId
+            if (!aopId.HasValue)
+            {
+                const string randomAopSql = @"
+            SELECT areas_of_practice_id
+            FROM tbl_areas_of_practice
+            WHERE (is_active = 1 OR is_active IS NULL)
+            ORDER BY RAND()
+            LIMIT 1;";
+
+                using var cmd = new MySqlCommand(randomAopSql, conn, tx);
+                var result = cmd.ExecuteScalar();
+                if (result != null && result != DBNull.Value)
+                {
+                    aopId = Convert.ToInt32(result);
+                    _logAction($"⚠️ AoP code '{apCode}' not found — assigned random aopId={aopId}");
+                }
+            }
+
+            // ── 2. Lookup caseTypeId by case_type_code (parts[2]) + aopId ────────────
+            if (!string.IsNullOrWhiteSpace(caseTypeCode) && aopId.HasValue)
+            {
+                const string caseTypeSql = @"
+            SELECT case_type_id
+            FROM tbl_case_type
+            WHERE UPPER(TRIM(case_type_code)) = UPPER(TRIM(@code))
+              AND fk_areas_of_practice_id = @aopId
+              AND (is_active = 1 OR is_active IS NULL)
+            LIMIT 1;";
+
+                using var cmd = new MySqlCommand(caseTypeSql, conn, tx);
+                cmd.Parameters.AddWithValue("@code", caseTypeCode);
+                cmd.Parameters.AddWithValue("@aopId", aopId.Value);
+                var result = cmd.ExecuteScalar();
+                if (result != null && result != DBNull.Value)
+                {
+                    caseTypeId = Convert.ToInt32(result);
+                    _logAction($"✅ CaseType matched by code '{caseTypeCode}' + aopId={aopId}: caseTypeId={caseTypeId}");
+                }
+            }
+
+            // Not matched → pick a random active caseTypeId
+            if (!caseTypeId.HasValue)
+            {
+                const string randomCaseTypeSql = @"
+            SELECT case_type_id
+            FROM tbl_case_type
+            WHERE (is_active = 1 OR is_active IS NULL)
+            ORDER BY RAND()
+            LIMIT 1;";
+
+                using var cmd = new MySqlCommand(randomCaseTypeSql, conn, tx);
+                var result = cmd.ExecuteScalar();
+                if (result != null && result != DBNull.Value)
+                {
+                    caseTypeId = Convert.ToInt32(result);
+                    _logAction($"⚠️ CaseType code '{caseTypeCode}' not found — assigned random caseTypeId={caseTypeId}");
+                }
+            }
+
+            // ── 3. Lookup caseSubTypeId by caseTypeId (parts[2] is sub_type_code) ─────
+            if (caseTypeId.HasValue)
+            {
+                const string subTypeSql = @"
+            SELECT case_sub_type_id
+            FROM tbl_case_sub_type
+            WHERE fk_case_type_id = @caseTypeId
+              AND (is_active = 1 OR is_active IS NULL)
+            ORDER BY case_sub_type_id
+            LIMIT 1;";
+
+                using var cmd = new MySqlCommand(subTypeSql, conn, tx);
+                cmd.Parameters.AddWithValue("@caseTypeId", caseTypeId.Value);
+                var result = cmd.ExecuteScalar();
+                if (result != null && result != DBNull.Value)
+                {
+                    caseSubTypeId = Convert.ToInt32(result);
+                    _logAction($"✅ SubCaseType matched: caseSubTypeId={caseSubTypeId}");
+                }
+            }
+
+            _logAction($"📋 '{caseRef}' → caseNumber={caseNumber} | " +
+                       $"aopId={aopId?.ToString() ?? "null"} | " +
+                       $"caseTypeId={caseTypeId?.ToString() ?? "null"} | " +
+                       $"caseSubTypeId={caseSubTypeId?.ToString() ?? "null"}");
+        }
+
+
+        private int InsertCaseDetailsGeneral(
+        MySqlConnection conn, MySqlTransaction tx,
+        AccountUpdateExcelData row, int clientId,
+        int? aopId, int? caseTypeId, int? caseSubTypeId, int caseNumber)
+        {
+            string clientName = ResolveClientNameById(conn, tx, clientId)
+                        ?? row.ClientName
+                        ?? "Unknown Client";
+
+            const string sql = @"
+        INSERT INTO tbl_case_details_general (
+            fk_branch_id, fk_area_of_practice_id, fk_case_type_id, fk_case_sub_type_id,
+            case_reference_auto, case_number, case_name,
+            case_clients, date_opened, person_opened,
+            is_case_active, is_case_archived, is_case_not_proceeding, mnl_check, conf_search
+        ) VALUES (
+            @branchId, @aopId, @caseTypeId, @caseSubTypeId,
+            @caseRef, @caseNumber, @caseName,
+            @caseClients, @dateOpened, @personOpened,
+            0, 1, 0, 1, 1
+        );
+        SELECT LAST_INSERT_ID();";
+
+            using var cmd = new MySqlCommand(sql, conn, tx);
+            cmd.Parameters.AddWithValue("@branchId", _branchId);
+            cmd.Parameters.AddWithValue("@aopId", (object?)aopId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@caseTypeId", (object?)caseTypeId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@caseSubTypeId", (object?)caseSubTypeId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@caseRef", row.CaseReference ?? "");
+            cmd.Parameters.AddWithValue("@caseNumber", caseNumber);
+            cmd.Parameters.AddWithValue("@caseName", row.ClientName ?? row.CaseReference ?? "Auto-created");
+            cmd.Parameters.AddWithValue("@caseClients", clientName ?? "");
+            cmd.Parameters.AddWithValue("@dateOpened", row.TransactionDate);
+            cmd.Parameters.AddWithValue("@personOpened", _userId);
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        }
+
+        private string? ResolveClientNameById(MySqlConnection conn, MySqlTransaction tx, int clientId)
+        {
+            // 1. Individual → CONCAT given_names + last_name
+            const string individualSql = @"
+        SELECT TRIM(CONCAT(COALESCE(given_names, ''), ' ', COALESCE(last_name, '')))
+        FROM tbl_client_individual
+        WHERE fk_client_id = @clientId
+        LIMIT 1;";
+
+            using (var cmd = new MySqlCommand(individualSql, conn, tx))
+            {
+                cmd.Parameters.AddWithValue("@clientId", clientId);
+                var result = cmd.ExecuteScalar();
+                if (result != null && result != DBNull.Value)
+                {
+                    var name = result.ToString()?.Trim();
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        _logAction($"✅ Client name resolved from tbl_client_individual: '{name}'");
+                        return name;
+                    }
+                }
+            }
+
+            // 2. Company → company_name
+            const string companySql = @"
+        SELECT company_name
+        FROM tbl_client_company
+        WHERE fk_client_id = @clientId
+        LIMIT 1;";
+
+            using (var cmd = new MySqlCommand(companySql, conn, tx))
+            {
+                cmd.Parameters.AddWithValue("@clientId", clientId);
+                var result = cmd.ExecuteScalar();
+                if (result != null && result != DBNull.Value)
+                {
+                    var name = result.ToString()?.Trim();
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        _logAction($"✅ Client name resolved from tbl_client_company: '{name}'");
+                        return name;
+                    }
+                }
+            }
+
+            // 3. Organisation → org_name
+            const string orgSql = @"
+        SELECT org_name
+        FROM tbl_client_organisation
+        WHERE fk_client_id = @clientId
+        LIMIT 1;";
+
+            using (var cmd = new MySqlCommand(orgSql, conn, tx))
+            {
+                cmd.Parameters.AddWithValue("@clientId", clientId);
+                var result = cmd.ExecuteScalar();
+                if (result != null && result != DBNull.Value)
+                {
+                    var name = result.ToString()?.Trim();
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        _logAction($"✅ Client name resolved from tbl_client_organisation: '{name}'");
+                        return name;
+                    }
+                }
+            }
+
+            _logAction($"⚠️ Could not resolve client name for clientId={clientId}");
+            return null;
+        }
+
+
+        private int InsertLedgerCard(MySqlConnection conn, MySqlTransaction tx, int caseId, int clientId)
+        {
+            const string sql = @"
+        INSERT INTO tbl_acc_ledger_cards (fk_branch_id, fk_client_ids, fk_case_id, is_deleted, is_archived)
+        VALUES (@branchId, @clientIds, @caseId, 0, 0);
+        SELECT LAST_INSERT_ID();";
+
+            using var cmd = new MySqlCommand(sql, conn, tx);
+            cmd.Parameters.AddWithValue("@branchId", _branchId);
+            cmd.Parameters.AddWithValue("@clientIds", clientId.ToString());
+            cmd.Parameters.AddWithValue("@caseId", caseId);
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        }
+
+        private void InsertCasePermissions(MySqlConnection conn, MySqlTransaction tx, int caseId)
+        {
+            const string sql = @"
+        INSERT INTO tbl_case_permissions (
+            fk_case_id, person_opened, person_responsible,
+            person_acting, person_assisting,
+            is_everyone_view, is_everyone_add_edit
+        ) VALUES (
+            @caseId, @userId, @userId,
+            @userId, NULL,
+            1, 0
+        );";
+
+            using var cmd = new MySqlCommand(sql, conn, tx);
+            cmd.Parameters.AddWithValue("@caseId", caseId);
+            cmd.Parameters.AddWithValue("@userId", _userId);
+            cmd.ExecuteNonQuery();
+        }
+
+        private void InsertCaseClient(MySqlConnection conn, MySqlTransaction tx, int caseId, int clientId, AccountUpdateExcelData row)
+        {
+            const string sql = @"
+        INSERT INTO tbl_case_clients (fk_case_id, fk_client_id, client_order, date_added, user_added)
+        VALUES (@caseId, @clientId, 1, @dateAdded, @userId);";
+
+            using var cmd = new MySqlCommand(sql, conn, tx);
+            cmd.Parameters.AddWithValue("@caseId", caseId);
+            cmd.Parameters.AddWithValue("@clientId", clientId);
+            cmd.Parameters.AddWithValue("@dateAdded", row.TransactionDate);
+            cmd.Parameters.AddWithValue("@userId", _userId);
+            cmd.ExecuteNonQuery();
+        }
+
+        private void InsertCaseClientGreeting( MySqlConnection conn, MySqlTransaction tx, int caseId, string? clientName)
+        {
+            const string sql = @"
+        INSERT INTO tbl_case_client_greeting (fk_case_id, greeting_type, greeting_all)
+        VALUES (@caseId, 'all', @greeting);";
+
+            using var cmd = new MySqlCommand(sql, conn, tx);
+            cmd.Parameters.AddWithValue("@caseId", caseId);
+            cmd.Parameters.AddWithValue("@greeting", $"Dear {clientName ?? "Client"}");
+            cmd.ExecuteNonQuery();
+        }
+
+
+
+
 
         private AccountTransactionType ParseTransactionType(string? typeString)
         {
@@ -1084,12 +1552,12 @@ namespace LeapMergeDoc.Services
                 INSERT INTO tbl_acc_invoice (
                     fk_branch_id, fk_case_id, invoice_number, finalised_on, due_date,
                     total, tax, amount, fk_transaction_id,
-                    fk_current_status, entry_date, authorised_by, is_cancelled, authorisation_type,
+                    fk_current_status, entry_date, authorised_on, transaction_date, invoice_to, authorised_by, is_cancelled, authorisation_type,
                     finalised_comments
                 ) VALUES (
                     @branchId, @caseId, @invoiceNumber, @invoiceDate, @dueDate,
                     @totalAmount, @taxAmount, @netAmount, @transactionId,
-                    @currentStatus, @entryDate, @staffId, @isDeleted, @invoiceType,
+                    @currentStatus, @entryDate, @entryDate, @entryDate, @invoiceTo, @staffId, @isDeleted, @invoiceType,
                     @comments
                 );
                 SELECT LAST_INSERT_ID();";
@@ -1111,6 +1579,7 @@ namespace LeapMergeDoc.Services
                 cmd.Parameters.AddWithValue("@staffId", _userId);
                 cmd.Parameters.AddWithValue("@isDeleted", false);
                 cmd.Parameters.AddWithValue("@invoiceType", "Approved");
+                cmd.Parameters.AddWithValue("@invoiceTo", data.PaidTo);
                 //cmd.Parameters.AddWithValue("@incomeAccountId", incomeAccountId);
                 cmd.Parameters.AddWithValue("@comments", data.Comments ?? "Imported invoice");
 
