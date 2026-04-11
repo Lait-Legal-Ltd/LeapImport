@@ -11,12 +11,73 @@ namespace LeapMergeDoc.Services
         private readonly string _connectionString;
         private readonly MatterTypeMatcher _matterTypeMatcher;
         private readonly Action<string> _logAction;
+        private Dictionary<string, ClientMasterRecord>? _clientMasterData;
 
         public DatabaseImportService(string connectionString, Action<string> logAction)
         {
             _connectionString = connectionString;
             _matterTypeMatcher = new MatterTypeMatcher();
             _logAction = logAction;
+        }
+
+        /// <summary>
+        /// Loads the client master CSV file that contains the actual client for each Client No.
+        /// The CSV should have Client No in the first column and client details.
+        /// </summary>
+        public int LoadClientMasterCsv(string filePath)
+        {
+            _clientMasterData = new Dictionary<string, ClientMasterRecord>(StringComparer.OrdinalIgnoreCase);
+            int loaded = 0;
+
+            using (var reader = new StreamReader(filePath))
+            {
+                // Read header
+                string? header = reader.ReadLine();
+                if (header == null) return 0;
+
+                // Parse: Client No,Title,Initials,Forename,Surname,...
+                while (!reader.EndOfStream)
+                {
+                    string? line = reader.ReadLine();
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+
+                    var values = ParseCsvLine(line);
+                    if (values.Count < 5) continue;
+
+                    string clientNo = values[0].Trim();
+                    if (string.IsNullOrEmpty(clientNo)) continue;
+
+                    // Only take the first entry per Client No (the actual client)
+                    if (_clientMasterData.ContainsKey(clientNo)) continue;
+
+                    var record = new ClientMasterRecord
+                    {
+                        ClientNo = clientNo,
+                        Title = values.Count > 1 ? values[1].Trim() : "",
+                        Initials = values.Count > 2 ? values[2].Trim() : "",
+                        Forename = values.Count > 3 ? values[3].Trim() : "",
+                        Surname = values.Count > 4 ? values[4].Trim() : ""
+                    };
+
+                    _clientMasterData[clientNo] = record;
+                    loaded++;
+                }
+            }
+
+            _logAction($"Loaded {loaded} client master records from {Path.GetFileName(filePath)}");
+            return loaded;
+        }
+
+        /// <summary>
+        /// Gets the client master record for a given Client No.
+        /// </summary>
+        public ClientMasterRecord? GetClientMaster(string clientNo)
+        {
+            if (_clientMasterData == null || string.IsNullOrEmpty(clientNo))
+                return null;
+
+            _clientMasterData.TryGetValue(clientNo, out var record);
+            return record;
         }
 
         public (int rowsDeleted, string message) TruncateImportedData()
@@ -381,107 +442,60 @@ namespace LeapMergeDoc.Services
             var caseTypeLookup = LoadCaseTypesFromDatabase();
             _logAction($"Loaded {caseTypeLookup.Count} case types from database for Work Id mapping.");
 
-            int caseNumber = 1; // Start from 1 for sequential case numbers
+            // Group rows by Client No + Matter Number (same case can have client + contacts)
+            var caseGroups = excelData
+                .Where(r => !string.IsNullOrEmpty(r.ClientNo) && !string.IsNullOrEmpty(r.MatterNumber))
+                .GroupBy(r => $"{r.ClientNo}-{r.MatterNumber}")
+                .ToList();
 
-            foreach (var row in excelData)
+            // Also include rows without ClientNo/MatterNumber as individual cases
+            var standaloneRows = excelData
+                .Where(r => string.IsNullOrEmpty(r.ClientNo) || string.IsNullOrEmpty(r.MatterNumber))
+                .ToList();
+
+            _logAction($"Found {caseGroups.Count} case groups + {standaloneRows.Count} standalone rows");
+
+            int caseNumber = 1;
+
+            // Process grouped cases (with Client No + Matter Number)
+            foreach (var group in caseGroups)
             {
-                // Determine CaseReferenceAuto
-                string? caseReferenceAuto;
-                if (!string.IsNullOrEmpty(row.ClientNo) && !string.IsNullOrEmpty(row.MatterNumber))
+                var rows = group.ToList();
+                
+                // Find the client row (empty Forename = company client)
+                // If no company row, use the first row
+                var clientRow = rows.FirstOrDefault(r => string.IsNullOrEmpty(r.Forename)) ?? rows.First();
+                
+                // Other rows are contacts
+                var contactRows = rows.Where(r => r != clientRow && !string.IsNullOrEmpty(r.Forename)).ToList();
+
+                string caseReferenceAuto = group.Key;
+
+                // Extract contacts (note: Title/Email/Phone might not be in case CSV)
+                var contacts = contactRows.Select(c => new CaseContactInfo
                 {
-                    // New LEAP format: ClientNo-MatterNumber (e.g., SMI0001-1)
-                    caseReferenceAuto = $"{row.ClientNo}-{row.MatterNumber}";
-                }
-                else
+                    Forename = c.Forename,
+                    Surname = c.Surname
+                }).ToList();
+
+                if (contactRows.Count > 0)
                 {
-                    // Fallback to MatterNo if available
-                    caseReferenceAuto = row.MatterNo;
+                    _logAction($"Case {caseReferenceAuto}: Client='{clientRow.Surname}', Contacts={string.Join(", ", contactRows.Select(c => $"{c.Forename} {c.Surname}"))}");
                 }
 
-                // Lookup fee earner by code (F/E column) or by name
-                int? feeEarnerId = null;
-                if (!string.IsNullOrEmpty(row.FeeEarnerCode))
-                {
-                    feeEarnerId = LookupUserId(row.FeeEarnerCode, userLookup);
-                    if (feeEarnerId == null)
-                    {
-                        notFoundFeeEarners.Add(row.FeeEarnerCode);
-                        _logAction($"⚠️ Fee Earner code not found: '{row.FeeEarnerCode}' for case {caseReferenceAuto}");
-                    }
-                }
-                else if (!string.IsNullOrEmpty(row.StaffRespName))
-                {
-                    feeEarnerId = LookupUserId(row.StaffRespName, userLookup);
-                }
-
-                // F/E maps to both PersonResponsible and PersonActing
-                int? personResponsible = feeEarnerId;
-                int? personActing = feeEarnerId;
-                int? personAssisting = LookupUserId(row.StaffAssistName, userLookup);
-                int? caseCredit = LookupUserId(row.CreditName, userLookup);
-
-                // Lookup Work Id to get AreaOfPractice and CaseType
-                int? areaOfPracticeId = null;
-                int? caseTypeId = null;
-
-                if (!string.IsNullOrEmpty(row.WorkId) && caseTypeLookup.TryGetValue(row.WorkId.Trim(), out var caseTypeInfo))
-                {
-                    caseTypeId = caseTypeInfo.CaseTypeId;
-                    areaOfPracticeId = caseTypeInfo.AreaOfPracticeId > 0 ? caseTypeInfo.AreaOfPracticeId : null;
-                    _logAction($"Work Id '{row.WorkId}' mapped to CaseType:{caseTypeId}, AreaOfPractice:{areaOfPracticeId}");
-                }
-                else if (!string.IsNullOrEmpty(row.WorkId))
-                {
-                    notFoundWorkIds.Add(row.WorkId);
-                    _logAction($"⚠️ Work Id not found in database: '{row.WorkId}' for case {caseReferenceAuto}");
-                    // Fallback to MatterTypeMatcher
-                    var matterMatch = _matterTypeMatcher.MatchMatterType(row.MatterType);
-                    areaOfPracticeId = matterMatch.AreaOfPracticeId;
-                    caseTypeId = matterMatch.CaseTypeId;
-                }
-                else
-                {
-                    // Use MatterTypeMatcher for old format
-                    var matterMatch = _matterTypeMatcher.MatchMatterType(row.MatterType);
-                    areaOfPracticeId = matterMatch.AreaOfPracticeId;
-                    caseTypeId = matterMatch.CaseTypeId;
-                }
-
-                // Build client name from Surname/Forename if available
-                string? clientName = row.ClientName;
-                if (!string.IsNullOrEmpty(row.Surname))
-                {
-                    if (!string.IsNullOrEmpty(row.Forename))
-                        clientName = $"{row.Forename} {row.Surname}".Trim();
-                    else
-                        clientName = row.Surname;  // Company name (no forename)
-                }
-
-                var caseData = new ProcessedCaseData
-                {
-                    OriginalData = row,
-                    FkBranchId = 1,
-                    FkAreaOfPracticeId = areaOfPracticeId,
-                    FkCaseTypeId = caseTypeId,
-                    FkCaseSubTypeId = null,
-                    CaseReferenceAuto = caseReferenceAuto,
-                    CaseNumber = caseNumber,
-                    CaseName = !string.IsNullOrEmpty(row.MatterDescription) ? row.MatterDescription : row.CaseName,
-                    DateOpened = row.DateOpened,
-                    PersonOpened = 1,  // Hardcoded to first user
-                    PersonResponsible = personResponsible,
-                    PersonActing = personActing,
-                    PersonAssisting = personAssisting,
-                    CaseCredit = caseCredit,
-                    IsCaseActive = row.ArchiveDate == null,
-                    IsCaseArchived = row.ArchiveDate != null,
-                    IsCaseNotProceeding = false,
-                    MnlCheck = true,   // Set to true for imports (already verified in source system)
-                    ConfSearch = true  // Set to true for imports (already verified in source system)
-                };
-
+                var caseData = ProcessSingleCase(clientRow, caseReferenceAuto, caseNumber, userLookup, caseTypeLookup, notFoundFeeEarners, notFoundWorkIds);
+                caseData.Contacts = contacts;
                 processedData.Add(caseData);
-                caseNumber++; // Increment for next case
+                caseNumber++;
+            }
+
+            // Process standalone rows
+            foreach (var row in standaloneRows)
+            {
+                string? caseReferenceAuto = row.MatterNo;
+                var caseData = ProcessSingleCase(row, caseReferenceAuto, caseNumber, userLookup, caseTypeLookup, notFoundFeeEarners, notFoundWorkIds);
+                processedData.Add(caseData);
+                caseNumber++;
             }
 
             // Log summary of not found items for manual review
@@ -506,6 +520,85 @@ namespace LeapMergeDoc.Services
             }
 
             return processedData;
+        }
+
+        private ProcessedCaseData ProcessSingleCase(
+            CaseExcelData row,
+            string? caseReferenceAuto,
+            int caseNumber,
+            Dictionary<string, int> userLookup,
+            Dictionary<string, (int CaseTypeId, int AreaOfPracticeId)> caseTypeLookup,
+            HashSet<string> notFoundFeeEarners,
+            HashSet<string> notFoundWorkIds)
+        {
+            // Lookup fee earner by code (F/E column) or by name
+            int? feeEarnerId = null;
+            if (!string.IsNullOrEmpty(row.FeeEarnerCode))
+            {
+                feeEarnerId = LookupUserId(row.FeeEarnerCode, userLookup);
+                if (feeEarnerId == null)
+                {
+                    notFoundFeeEarners.Add(row.FeeEarnerCode);
+                    _logAction($"⚠️ Fee Earner code not found: '{row.FeeEarnerCode}' for case {caseReferenceAuto}");
+                }
+            }
+            else if (!string.IsNullOrEmpty(row.StaffRespName))
+            {
+                feeEarnerId = LookupUserId(row.StaffRespName, userLookup);
+            }
+
+            // F/E maps to both PersonResponsible and PersonActing
+            int? personResponsible = feeEarnerId;
+            int? personActing = feeEarnerId;
+            int? personAssisting = LookupUserId(row.StaffAssistName, userLookup);
+            int? caseCredit = LookupUserId(row.CreditName, userLookup);
+
+            // Lookup Work Id to get AreaOfPractice and CaseType
+            int? areaOfPracticeId = null;
+            int? caseTypeId = null;
+
+            if (!string.IsNullOrEmpty(row.WorkId) && caseTypeLookup.TryGetValue(row.WorkId.Trim(), out var caseTypeInfo))
+            {
+                caseTypeId = caseTypeInfo.CaseTypeId;
+                areaOfPracticeId = caseTypeInfo.AreaOfPracticeId > 0 ? caseTypeInfo.AreaOfPracticeId : null;
+            }
+            else if (!string.IsNullOrEmpty(row.WorkId))
+            {
+                notFoundWorkIds.Add(row.WorkId);
+                _logAction($"⚠️ Work Id not found in database: '{row.WorkId}' for case {caseReferenceAuto}");
+                var matterMatch = _matterTypeMatcher.MatchMatterType(row.MatterType);
+                areaOfPracticeId = matterMatch.AreaOfPracticeId;
+                caseTypeId = matterMatch.CaseTypeId;
+            }
+            else
+            {
+                var matterMatch = _matterTypeMatcher.MatchMatterType(row.MatterType);
+                areaOfPracticeId = matterMatch.AreaOfPracticeId;
+                caseTypeId = matterMatch.CaseTypeId;
+            }
+
+            return new ProcessedCaseData
+            {
+                OriginalData = row,
+                FkBranchId = 1,
+                FkAreaOfPracticeId = areaOfPracticeId,
+                FkCaseTypeId = caseTypeId,
+                FkCaseSubTypeId = null,
+                CaseReferenceAuto = caseReferenceAuto,
+                CaseNumber = caseNumber,
+                CaseName = !string.IsNullOrEmpty(row.MatterDescription) ? row.MatterDescription : row.CaseName,
+                DateOpened = row.DateOpened,
+                PersonOpened = 1,
+                PersonResponsible = personResponsible,
+                PersonActing = personActing,
+                PersonAssisting = personAssisting,
+                CaseCredit = caseCredit,
+                IsCaseActive = row.ArchiveDate == null,
+                IsCaseArchived = row.ArchiveDate != null,
+                IsCaseNotProceeding = false,
+                MnlCheck = true,
+                ConfSearch = true
+            };
         }
 
         private Dictionary<string, int> LoadUsersFromDatabase()
@@ -648,7 +741,32 @@ namespace LeapMergeDoc.Services
 
                 foreach (var caseData in processedData)
                 {
-                    var clientInfo = FindClientInfo(connection, caseData.OriginalData!);
+                    // Use client master lookup if available
+                    ClientInfo? clientInfo = null;
+                    
+                    if (_clientMasterData != null && caseData.OriginalData != null)
+                    {
+                        // Extract Client No from case reference (e.g., "SSN0001-1" -> "SSN0001")
+                        string clientNo = ExtractClientNoFromCaseRef(caseData.CaseReferenceAuto ?? caseData.OriginalData.ClientNo ?? "");
+                        
+                        if (!string.IsNullOrEmpty(clientNo))
+                        {
+                            var masterRecord = GetClientMaster(clientNo);
+                            if (masterRecord != null)
+                            {
+                                // Search for the actual client from master record
+                                clientInfo = FindClientInfoByMasterRecord(connection, masterRecord);
+                                _logAction($"Client master lookup for {clientNo}: {(clientInfo != null ? clientInfo.FullName : "NOT FOUND")} (IsCompany: {masterRecord.IsCompany})");
+                            }
+                        }
+                    }
+                    
+                    // Fallback to original logic if no client master or not found
+                    if (clientInfo == null)
+                    {
+                        clientInfo = FindClientInfo(connection, caseData.OriginalData!);
+                    }
+                    
                     caseData.LinkedClientId = clientInfo?.ClientId;
                     caseData.ClientFullName = clientInfo?.FullName;
 
@@ -660,6 +778,55 @@ namespace LeapMergeDoc.Services
             }
 
             return (foundClients, notFoundClients);
+        }
+
+        /// <summary>
+        /// Extracts Client No from case reference. E.g., "SSN0001-1" -> "SSN0001"
+        /// </summary>
+        private string ExtractClientNoFromCaseRef(string caseRef)
+        {
+            if (string.IsNullOrEmpty(caseRef))
+                return "";
+
+            // Case reference format: {ClientNo}-{MatterNumber}
+            int dashIndex = caseRef.LastIndexOf('-');
+            if (dashIndex > 0)
+            {
+                return caseRef.Substring(0, dashIndex).Trim();
+            }
+            return caseRef.Trim();
+        }
+
+        /// <summary>
+        /// Finds client in database using the client master record.
+        /// </summary>
+        private ClientInfo? FindClientInfoByMasterRecord(MySqlConnection connection, ClientMasterRecord masterRecord)
+        {
+            if (masterRecord.IsCompany)
+            {
+                // Company client - search by company name (Surname holds company name when no Forename)
+                if (string.IsNullOrEmpty(masterRecord.Surname))
+                    return null;
+                return SearchCompanyByName(connection, masterRecord.Surname);
+            }
+            else
+            {
+                // Individual client - search by forename and surname
+                if (string.IsNullOrEmpty(masterRecord.Forename) || string.IsNullOrEmpty(masterRecord.Surname))
+                    return null;
+
+                var result = SearchIndividualByNames(connection, masterRecord.Forename, masterRecord.Surname);
+                if (result != null) return result;
+
+                // Fallback to last name only
+                result = SearchIndividualByLastName(connection, masterRecord.Surname);
+                if (result != null) return result;
+
+                // Final fallback - search by full name
+                string fullName = $"{masterRecord.Forename} {masterRecord.Surname}".Trim();
+                result = SearchIndividualByFullName(connection, fullName);
+                return result;
+            }
         }
 
         private ClientInfo? FindClientInfo(MySqlConnection connection, CaseExcelData caseData)
@@ -970,6 +1137,12 @@ namespace LeapMergeDoc.Services
                                             {
                                                 clientNameDisplay = clientInfo.CompanyName ?? "";
                                             }
+                                            
+                                            // Update company contacts if this is a company client and we have contacts
+                                            if (clientInfo.ClientType == "Company" && item.Contacts.Count > 0)
+                                            {
+                                                UpdateCompanyContacts(connection, transaction, item.LinkedClientId.Value, item.Contacts);
+                                            }
                                         }
 
                                         // Greeting can be inserted manually later
@@ -1163,6 +1336,77 @@ namespace LeapMergeDoc.Services
                 cmd.Parameters.AddWithValue("@case_id", caseId);
                 cmd.Parameters.AddWithValue("@case_clients", clientName);
                 cmd.ExecuteNonQuery();
+            }
+        }
+
+        private void UpdateCompanyContacts(MySqlConnection connection, MySqlTransaction transaction, int clientId, List<CaseContactInfo> contacts)
+        {
+            if (contacts.Count == 0) return;
+
+            // Update tbl_client_company with contact info (max 2 contacts)
+            var updateParts = new List<string>();
+            var parameters = new Dictionary<string, object>();
+
+            if (contacts.Count > 0)
+            {
+                var contact1 = contacts[0];
+                updateParts.Add("comp_contact1_given_names = @c1_forename");
+                updateParts.Add("comp_contact1_last_name = @c1_surname");
+                parameters["@c1_forename"] = SanitizeString(contact1.Forename) ?? "";
+                parameters["@c1_surname"] = SanitizeString(contact1.Surname) ?? "";
+
+                if (!string.IsNullOrEmpty(contact1.Email))
+                {
+                    updateParts.Add("comp_contact1_email = @c1_email");
+                    parameters["@c1_email"] = contact1.Email;
+                }
+                if (!string.IsNullOrEmpty(contact1.Phone))
+                {
+                    updateParts.Add("comp_contact1_mobile = @c1_phone");
+                    parameters["@c1_phone"] = contact1.Phone;
+                }
+            }
+
+            if (contacts.Count > 1)
+            {
+                var contact2 = contacts[1];
+                updateParts.Add("comp_contact2_given_names = @c2_forename");
+                updateParts.Add("comp_contact2_last_name = @c2_surname");
+                parameters["@c2_forename"] = SanitizeString(contact2.Forename) ?? "";
+                parameters["@c2_surname"] = SanitizeString(contact2.Surname) ?? "";
+
+                if (!string.IsNullOrEmpty(contact2.Email))
+                {
+                    updateParts.Add("comp_contact2_email = @c2_email");
+                    parameters["@c2_email"] = contact2.Email;
+                }
+                if (!string.IsNullOrEmpty(contact2.Phone))
+                {
+                    updateParts.Add("comp_contact2_mobile = @c2_phone");
+                    parameters["@c2_phone"] = contact2.Phone;
+                }
+            }
+
+            if (updateParts.Count == 0) return;
+
+            string sql = $@"
+                UPDATE tbl_client_company 
+                SET {string.Join(", ", updateParts)}
+                WHERE fk_client_id = @clientId";
+
+            using (var cmd = new MySqlCommand(sql, connection, transaction))
+            {
+                cmd.Parameters.AddWithValue("@clientId", clientId);
+                foreach (var param in parameters)
+                {
+                    cmd.Parameters.AddWithValue(param.Key, param.Value);
+                }
+                int updated = cmd.ExecuteNonQuery();
+                if (updated > 0)
+                {
+                    var contactNames = contacts.Take(2).Select(c => $"{c.Forename} {c.Surname}").ToList();
+                    _logAction($"Updated company contacts for client {clientId}: {string.Join(", ", contactNames)}");
+                }
             }
         }
 

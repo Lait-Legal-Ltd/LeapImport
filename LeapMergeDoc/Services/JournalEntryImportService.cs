@@ -11,8 +11,8 @@ namespace LeapMergeDoc.Services
         private readonly string _connectionString;
         private readonly Action<string> _logAction;
 
-        // Fixed transaction date: 31/12/2025
-        private readonly DateTime _transactionDate = new DateTime(2025, 12, 31, 17, 49, 47);
+        // Fixed transaction date: 01/04/2026 05:00:00
+        private readonly DateTime _transactionDate = new DateTime(2026, 4, 1, 5, 0, 0);
 
         public JournalEntryImportService(string connectionString, Action<string> logAction)
         {
@@ -21,6 +21,108 @@ namespace LeapMergeDoc.Services
         }
 
         public List<JournalExcelData> ReadExcelData(string filePath)
+        {
+            var extension = Path.GetExtension(filePath).ToLower();
+            
+            if (extension == ".csv")
+            {
+                return ReadCsvData(filePath);
+            }
+            else
+            {
+                return ReadExcelFileData(filePath);
+            }
+        }
+
+        private List<JournalExcelData> ReadCsvData(string filePath)
+        {
+            var data = new List<JournalExcelData>();
+            var lines = File.ReadAllLines(filePath);
+
+            if (lines.Length < 2)
+            {
+                _logAction("No data found in CSV file.");
+                return data;
+            }
+
+            _logAction($"Found {lines.Length - 1} data rows in CSV file.");
+            _logAction($"Headers: {lines[0]}");
+
+            // CSV format: Client,Matter,Client Name,Matter Description,F/E,W/T,Client (balance)
+            for (int i = 1; i < lines.Length; i++)
+            {
+                var line = lines[i].Trim();
+                if (string.IsNullOrEmpty(line)) continue;
+
+                var columns = ParseCsvLine(line);
+                if (columns.Length < 7) continue;
+
+                var rowData = new JournalExcelData
+                {
+                    ClientCode = columns[0].Trim(),           // Client code (e.g., "2DE0001")
+                    Matter = columns[1].Trim(),               // Matter number (e.g., "1")
+                    ClientName = columns[2].Trim(),           // Client Name
+                    MatterDescription = columns[3].Trim(),    // Matter Description
+                    FeeEarner = columns[4].Trim(),            // F/E
+                    WorkType = columns[5].Trim(),             // W/T
+                    Amount = ParseAmount(columns[6])          // Balance (last column)
+                };
+
+                // Only include rows with ClientCode and Matter
+                if (!string.IsNullOrEmpty(rowData.ClientCode) && !string.IsNullOrEmpty(rowData.Matter))
+                {
+                    data.Add(rowData);
+                }
+            }
+
+            return data;
+        }
+
+        private string[] ParseCsvLine(string line)
+        {
+            var result = new List<string>();
+            var current = "";
+            bool inQuotes = false;
+
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+                
+                if (c == '"')
+                {
+                    inQuotes = !inQuotes;
+                }
+                else if (c == ',' && !inQuotes)
+                {
+                    result.Add(current);
+                    current = "";
+                }
+                else
+                {
+                    current += c;
+                }
+            }
+            result.Add(current);
+
+            return result.ToArray();
+        }
+
+        private decimal ParseAmount(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return 0;
+            
+            // Remove quotes, spaces, commas used as thousand separators
+            var cleaned = value.Trim().Trim('"').Trim();
+            cleaned = cleaned.Replace(",", "").Replace(" ", "");
+            
+            if (decimal.TryParse(cleaned, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal amount))
+            {
+                return amount;
+            }
+            return 0;
+        }
+
+        private List<JournalExcelData> ReadExcelFileData(string filePath)
         {
             var data = new List<JournalExcelData>();
 
@@ -40,53 +142,21 @@ namespace LeapMergeDoc.Services
 
                 _logAction($"Found {rowCount - 1} data rows in Excel file.");
 
-                // Read headers
-                var headers = new List<string>();
-                for (int col = 1; col <= colCount; col++)
-                {
-                    headers.Add(worksheet.Cell(1, col).GetString().Trim());
-                }
-
-                _logAction($"Headers: {string.Join(", ", headers)}");
-
-                // Normalize headers for matching
-                var normalizedHeaders = headers.Select(h => h.ToLower().Replace("_", "").Replace(" ", "").Replace(".", "")).ToList();
-
-                // Read data rows
+                // Read data rows (assuming same column order as CSV)
                 for (int row = 2; row <= rowCount; row++)
                 {
-                    var rowData = new JournalExcelData();
-
-                    for (int col = 1; col <= colCount; col++)
+                    var rowData = new JournalExcelData
                     {
-                        var cellValue = worksheet.Cell(row, col).GetString().Trim();
-                        var header = normalizedHeaders[col - 1];
+                        ClientCode = worksheet.Cell(row, 1).GetString().Trim(),
+                        Matter = worksheet.Cell(row, 2).GetString().Trim(),
+                        ClientName = worksheet.Cell(row, 3).GetString().Trim(),
+                        MatterDescription = worksheet.Cell(row, 4).GetString().Trim(),
+                        FeeEarner = worksheet.Cell(row, 5).GetString().Trim(),
+                        WorkType = worksheet.Cell(row, 6).GetString().Trim(),
+                        Amount = ParseAmount(worksheet.Cell(row, 7).GetString())
+                    };
 
-                        switch (header)
-                        {
-                            case "matter":
-                                rowData.Matter = cellValue;
-                                break;
-                            case "client":
-                                rowData.Client = cellValue;
-                                break;
-                            case "matterdescription":
-                                rowData.MatterDescription = cellValue;
-                                break;
-                            case "lasttransdate":
-                                rowData.LastTransDate = ParseDate(cellValue);
-                                break;
-                            case "amount":
-                                if (decimal.TryParse(cellValue, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal amount))
-                                {
-                                    rowData.Amount = amount;
-                                }
-                                break;
-                        }
-                    }
-
-                    // Only include rows with Matter and Amount
-                    if (!string.IsNullOrEmpty(rowData.Matter))
+                    if (!string.IsNullOrEmpty(rowData.ClientCode) && !string.IsNullOrEmpty(rowData.Matter))
                     {
                         data.Add(rowData);
                     }
@@ -136,16 +206,18 @@ namespace LeapMergeDoc.Services
 
                 foreach (var row in excelData)
                 {
-                    var caseInfo = GetCaseIdByReference(connection, row.Matter!);
+                    // Use combined reference: ClientCode-Matter (e.g., "2DE0001-1")
+                    var caseReference = row.CaseReference;
+                    var caseInfo = GetCaseIdByReference(connection, caseReference);
 
                     var importData = new JournalImportData
                     {
                         CaseId = caseInfo?.caseId,
                         LedgerCardId = caseInfo?.ledgerCardId,
-                        CaseReference = row.Matter,
-                        ClientName = row.Client ?? "Unknown Client",
+                        CaseReference = caseReference,
+                        ClientName = row.ClientName ?? "Unknown Client",
                         Balance = row.Amount,
-                        Description = $"Opening Balance - {row.Matter}",
+                        Description = $"Opening Balance - {caseReference}",
                         AccountType = "case",
                         LineNumber = lineNumber++,
                         IsFound = caseInfo != null
@@ -160,6 +232,12 @@ namespace LeapMergeDoc.Services
                     {
                         summary.FoundCases++;
                         summary.FoundAmount += row.Amount;
+                        
+                        if (!caseInfo.Value.ledgerCardId.HasValue)
+                        {
+                            summary.MissingLedgerCards++;
+                            _logAction($"⚠️ Case '{caseReference}' found but NO LEDGER CARD exists!");
+                        }
                     }
                     else
                     {
@@ -173,12 +251,12 @@ namespace LeapMergeDoc.Services
             return (records, summary);
         }
 
-        private (int caseId, int ledgerCardId)? GetCaseIdByReference(MySqlConnection connection, string caseReference)
+        private (int caseId, int? ledgerCardId)? GetCaseIdByReference(MySqlConnection connection, string caseReference)
         {
             try
             {
                 string sql = @"
-                    SELECT c.case_id, COALESCE(l.ledger_card_id, c.case_id) as ledger_card_id
+                    SELECT c.case_id, l.ledger_card_id
                     FROM tbl_case_details_general c
                     LEFT JOIN tbl_acc_ledger_cards l ON l.fk_case_id = c.case_id
                     WHERE c.case_reference_auto = @caseReference 
@@ -193,7 +271,11 @@ namespace LeapMergeDoc.Services
                     {
                         if (reader.Read())
                         {
-                            return (reader.GetInt32("case_id"), reader.GetInt32("ledger_card_id"));
+                            var caseId = reader.GetInt32("case_id");
+                            var ledgerCardId = reader.IsDBNull(reader.GetOrdinal("ledger_card_id")) 
+                                ? (int?)null 
+                                : reader.GetInt32("ledger_card_id");
+                            return (caseId, ledgerCardId);
                         }
                     }
                 }
@@ -211,8 +293,20 @@ namespace LeapMergeDoc.Services
             int successCount = 0;
             int errorCount = 0;
 
-            // Filter only found cases
-            var foundRecords = records.Where(r => r.IsFound).ToList();
+            // Filter only found cases WITH ledger cards
+            var foundRecords = records.Where(r => r.IsFound && r.HasLedgerCard).ToList();
+            var missingLedgerCards = records.Where(r => r.IsFound && !r.HasLedgerCard).ToList();
+
+            if (missingLedgerCards.Count > 0)
+            {
+                _logAction($"❌ ERROR: {missingLedgerCards.Count} cases found but missing ledger cards:");
+                foreach (var rec in missingLedgerCards)
+                {
+                    _logAction($"   - {rec.CaseReference} (CaseId: {rec.CaseId})");
+                }
+                _logAction("Please create ledger cards for these cases before importing.");
+                return (0, missingLedgerCards.Count);
+            }
 
             if (foundRecords.Count == 0)
             {
@@ -256,9 +350,9 @@ namespace LeapMergeDoc.Services
                         {
                             try
                             {
-                                // Insert journal entry line (Credit)
+                                // Insert journal entry line (Credit) - use LedgerCardId (validated above)
                                 InsertJournalEntryLine(connection, transaction, journalEntryId, lineNumber++,
-                                    "ledger", data.LedgerCardId ?? data.CaseId!.Value, 0, data.Balance,
+                                    "ledger", data.LedgerCardId!.Value, 0, data.Balance,
                                     $"Opening Balance - {data.CaseReference}");
 
                                 // Insert ledger card transaction
@@ -449,7 +543,7 @@ namespace LeapMergeDoc.Services
             {
                 cmd.Parameters.AddWithValue("@branchId", 1);
                 cmd.Parameters.AddWithValue("@transactionId", transactionId);
-                cmd.Parameters.AddWithValue("@ledgerCardId", data.LedgerCardId ?? data.CaseId);
+                cmd.Parameters.AddWithValue("@ledgerCardId", data.LedgerCardId!.Value);
                 cmd.Parameters.AddWithValue("@transactionDateTime", _transactionDate);
                 cmd.Parameters.AddWithValue("@details", "Opening Balance");
                 cmd.Parameters.AddWithValue("@officeDr", 0);
@@ -537,6 +631,169 @@ namespace LeapMergeDoc.Services
             }
 
             return (totalDeleted, $"Successfully deleted {totalDeleted} total rows from journal tables.");
+        }
+
+        /// <summary>
+        /// Export journal entries as SQL INSERT statements for production database
+        /// </summary>
+        public string ExportAsSql(List<JournalImportData> records)
+        {
+            var sql = new System.Text.StringBuilder();
+            var foundRecords = records.Where(r => r.IsFound && r.HasLedgerCard).ToList();
+            var missingLedgerCards = records.Where(r => r.IsFound && !r.HasLedgerCard).ToList();
+
+            if (missingLedgerCards.Count > 0)
+            {
+                sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+                sql.AppendLine("-- ERROR: Cannot export - the following cases are missing ledger cards:");
+                sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+                foreach (var rec in missingLedgerCards)
+                {
+                    sql.AppendLine($"--   Case: {rec.CaseReference} (CaseId: {rec.CaseId})");
+                }
+                sql.AppendLine("-- Please create ledger cards for these cases before exporting.");
+                return sql.ToString();
+            }
+
+            if (foundRecords.Count == 0)
+            {
+                return "-- No valid records to export.";
+            }
+
+            decimal totalAmount = foundRecords.Sum(r => r.Balance);
+            string transactionDateStr = _transactionDate.ToString("yyyy-MM-dd HH:mm:ss");
+            string nowStr = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
+
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine("-- JOURNAL ENTRY IMPORT - Opening Balances");
+            sql.AppendLine($"-- Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            sql.AppendLine($"-- Transaction Date: {_transactionDate:dd/MM/yyyy}");
+            sql.AppendLine($"-- Total Records: {foundRecords.Count}");
+            sql.AppendLine($"-- Total Amount: {totalAmount:N2}");
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine();
+            sql.AppendLine("SET FOREIGN_KEY_CHECKS = 0;");
+            sql.AppendLine();
+
+            // Use variables for IDs
+            sql.AppendLine("-- Variables for generated IDs");
+            sql.AppendLine("SET @transaction_id = 0;");
+            sql.AppendLine("SET @journal_entry_id = 0;");
+            sql.AppendLine("SET @journal_entry_number = 0;");
+            sql.AppendLine();
+
+            // Get next journal entry number
+            sql.AppendLine("-- Get next journal entry number");
+            sql.AppendLine("SELECT @journal_entry_number := COALESCE(MAX(journal_entry_number), 0) + 1 FROM tbl_acc_journal_entry;");
+            sql.AppendLine();
+
+            // 1. Insert Transaction
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine("-- 1. INSERT TRANSACTION");
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine($@"INSERT INTO tbl_acc_transactions (
+    fk_branch_id, fk_transaction_type_id, fk_transaction_sub_type_id, 
+    transaction_details, transaction_reference, transaction_amount,
+    is_cancelled, post_by, post_date_time, transaction_date, transaction_type
+) VALUES (
+    1, 1, 4, 'Opening Balance', CONCAT('JRN ', @journal_entry_number), {Math.Abs(totalAmount):F2},
+    0, 1, '{nowStr}', '{transactionDateStr}', 'Add'
+);");
+            sql.AppendLine("SET @transaction_id = LAST_INSERT_ID();");
+            sql.AppendLine();
+
+            // 2. Insert Journal Entry Header
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine("-- 2. INSERT JOURNAL ENTRY HEADER");
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine($@"INSERT INTO tbl_acc_journal_entry (
+    fk_branch_id, fk_transaction_id, journal_entry_number, reference,
+    journal_entry_description, journal_entry_date, current_date_time,
+    staff_id, total, is_canceled
+) VALUES (
+    1, @transaction_id, @journal_entry_number, CONCAT('JRN-', @journal_entry_number),
+    'Opening Balance', '{transactionDateStr}', '{nowStr}',
+    1, {Math.Abs(totalAmount):F2}, 0
+);");
+            sql.AppendLine("SET @journal_entry_id = LAST_INSERT_ID();");
+            sql.AppendLine();
+
+            // 3. Insert Bank Line (Debit)
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine("-- 3. INSERT BANK LINE (DEBIT SIDE)");
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine($@"INSERT INTO tbl_acc_journal_entry_lines (
+    fk_journal_entry_id, fk_branch_id, line_number, account_type,
+    fk_account_id, description, debit, credit, date_time, fk_user_id, is_deleted
+) VALUES (
+    @journal_entry_id, 1, 1, 'bank', 1, 'Opening Balance', {Math.Abs(totalAmount):F2}, 0, '{nowStr}', 1, 0
+);");
+            sql.AppendLine();
+
+            // 4. Insert Bank Transaction
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine("-- 4. INSERT CLIENT BANK TRANSACTION");
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine($@"INSERT INTO tbl_acc_client_bank_transactions (
+    fk_branch_id, fk_transaction_id, fk_client_bank_id, transaction_date_time,
+    transaction, reference, details, dr_amount, cr_amount,
+    balance_pre, balance_post, is_cancelled, is_reconciled, fk_bank_reconciliation_id
+) VALUES (
+    1, @transaction_id, 1, '{transactionDateStr}',
+    'Opening Balance', CONCAT('JRN-', @journal_entry_number), 'Opening Balance', {Math.Abs(totalAmount):F2}, 0,
+    0, {totalAmount:F2}, 0, 0, NULL
+);");
+            sql.AppendLine();
+
+            // 5. Insert Journal Entry Lines (Credit) for each case
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine($"-- 5. INSERT JOURNAL ENTRY LINES (CREDIT SIDE) - {foundRecords.Count} records");
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            
+            int lineNumber = 2;
+            foreach (var data in foundRecords)
+            {
+                var desc = $"Opening Balance - {data.CaseReference}".Replace("'", "''");
+                sql.AppendLine($@"INSERT INTO tbl_acc_journal_entry_lines (
+    fk_journal_entry_id, fk_branch_id, line_number, account_type,
+    fk_account_id, description, debit, credit, date_time, fk_user_id, is_deleted
+) VALUES (
+    @journal_entry_id, 1, {lineNumber++}, 'ledger', {data.LedgerCardId!.Value}, '{desc}', 0, {data.Balance:F2}, '{nowStr}', 1, 0
+);");
+            }
+            sql.AppendLine();
+
+            // 6. Insert Ledger Card Transactions
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine($"-- 6. INSERT LEDGER CARD TRANSACTIONS - {foundRecords.Count} records");
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            
+            foreach (var data in foundRecords)
+            {
+                decimal clientBalance = Math.Abs(data.Balance);
+                string clientBalanceType = data.Balance > 0 ? "CR" : "DR";
+
+                sql.AppendLine($@"INSERT INTO tbl_acc_ledger_card_transactions (
+    fk_branch_id, fk_transaction_id, fk_ledger_card_id, transaction_date_time,
+    details, office_dr, office_cr, office_bal, office_bal_type,
+    client_dr, client_cr, client_bal, client_bal_type, total,
+    ledger_reference, is_cancelled
+) VALUES (
+    1, @transaction_id, {data.LedgerCardId!.Value}, '{transactionDateStr}',
+    'Opening Balance', 0, 0, 0, 'DR',
+    0, {data.Balance:F2}, {clientBalance:F2}, '{clientBalanceType}', {Math.Abs(data.Balance):F2},
+    CONCAT('JRN-', @journal_entry_number), 0
+);");
+            }
+
+            sql.AppendLine();
+            sql.AppendLine("SET FOREIGN_KEY_CHECKS = 1;");
+            sql.AppendLine();
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+            sql.AppendLine("-- IMPORT COMPLETE");
+            sql.AppendLine("-- ═══════════════════════════════════════════════════════════════════");
+
+            return sql.ToString();
         }
     }
 }

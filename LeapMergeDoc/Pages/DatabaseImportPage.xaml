@@ -129,6 +129,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
         
@@ -169,7 +170,7 @@
         </Border>
         
         <!-- Merged Excel File Selection -->
-        <Border Grid.Row="2" Background="White" CornerRadius="12" Padding="20" Margin="0,0,0,20">
+        <Border Grid.Row="2" Background="White" CornerRadius="12" Padding="20" Margin="0,0,0,12">
             <Border.Effect>
                 <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.1"/>
             </Border.Effect>
@@ -190,8 +191,30 @@
             </Grid>
         </Border>
         
+        <!-- Client Master CSV File Selection (Optional) -->
+        <Border Grid.Row="3" Background="White" CornerRadius="12" Padding="20" Margin="0,0,0,20">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.1"/>
+            </Border.Effect>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="Client Master CSV (Optional)" FontWeight="SemiBold" FontSize="15" Foreground="#374151"/>
+                    <TextBlock x:Name="txtClientMasterPath" Text="No file selected - will use case file client data" 
+                               FontSize="12" Foreground="#9CA3AF" Margin="0,5,0,0" 
+                               TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+                <Button Grid.Column="1" Content="📁 Browse..." 
+                        Style="{StaticResource FileSelectButton}"
+                        Click="BtnSelectClientMasterFile_Click"/>
+            </Grid>
+        </Border>
+        
         <!-- Action Buttons -->
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,20">
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,20">
             <Button x:Name="btnPreview" Content="👁 Preview Data" 
                     Style="{StaticResource ModernButton}"
                     IsEnabled="False"
@@ -208,7 +231,7 @@
         </StackPanel>
         
         <!-- Status Area -->
-        <Border Grid.Row="4" Background="White" CornerRadius="12" Padding="20">
+        <Border Grid.Row="5" Background="White" CornerRadius="12" Padding="20">
             <Border.Effect>
                 <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.1"/>
             </Border.Effect>

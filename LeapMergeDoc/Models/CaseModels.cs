@@ -109,6 +109,9 @@ namespace LeapMergeDoc.Models
         public bool ConfSearch { get; set; }
         public int? LinkedClientId { get; set; }
         public string? ClientFullName { get; set; }
+        
+        // Contacts for company clients (not the main client)
+        public List<CaseContactInfo> Contacts { get; set; } = new List<CaseContactInfo>();
     }
 
     public class ClientInfo
@@ -120,6 +123,36 @@ namespace LeapMergeDoc.Models
         public string? FullName { get; set; }
         public string? ClientType { get; set; }
         public string? CompanyName { get; set; }
+    }
+
+    /// <summary>
+    /// Client master record from client CSV (Client No -> actual client info)
+    /// Used to identify the real client for a case (vs contacts)
+    /// </summary>
+    public class ClientMasterRecord
+    {
+        public string? ClientNo { get; set; }    // e.g., SSN0001
+        public string? Title { get; set; }
+        public string? Initials { get; set; }
+        public string? Forename { get; set; }    // If empty, Surname is company name
+        public string? Surname { get; set; }     // Individual last name OR company name
+        public string? Email { get; set; }
+        public string? Phone { get; set; }
+        public bool IsCompany => string.IsNullOrEmpty(Forename);
+        public string ClientName => IsCompany ? Surname ?? "" : $"{Forename} {Surname}".Trim();
+    }
+
+    /// <summary>
+    /// Contact info for company clients (not the main client)
+    /// </summary>
+    public class CaseContactInfo
+    {
+        public string? Title { get; set; }
+        public string? Forename { get; set; }
+        public string? Surname { get; set; }
+        public string? Email { get; set; }
+        public string? Phone { get; set; }
+        public string FullName => $"{Forename} {Surname}".Trim();
     }
 
     public class ProcessedClientData

@@ -11,6 +11,7 @@ namespace LeapMergeDoc.Pages
     public partial class DatabaseImportPage : Page
     {
         private string? _mergedFilePath;
+        private string? _clientMasterFilePath;
         private List<CaseExcelData>? _excelData;
         private List<ProcessedCaseData>? _processedData;
 
@@ -70,6 +71,24 @@ namespace LeapMergeDoc.Pages
             }
         }
 
+        private void BtnSelectClientMasterFile_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = "Select Client Master CSV File",
+                Filter = "CSV Files (*.csv)|*.csv|All Files (*.*)|*.*",
+                FilterIndex = 1
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                _clientMasterFilePath = dialog.FileName;
+                txtClientMasterPath.Text = _clientMasterFilePath;
+                txtClientMasterPath.Foreground = System.Windows.Media.Brushes.DarkGreen;
+                UpdateStatus($"Client master CSV selected: {Path.GetFileName(_clientMasterFilePath)}");
+            }
+        }
+
         private async void BtnPreview_Click(object sender, RoutedEventArgs e)
         {
             if (string.IsNullOrEmpty(_mergedFilePath))
@@ -88,13 +107,21 @@ namespace LeapMergeDoc.Pages
 
                 await Task.Run(() =>
                 {
+                    // Load client master CSV if provided
+                    if (!string.IsNullOrEmpty(_clientMasterFilePath))
+                    {
+                        Dispatcher.Invoke(() => UpdateStatus("Loading client master CSV..."));
+                        int clientMasterCount = importService.LoadClientMasterCsv(_clientMasterFilePath);
+                        Dispatcher.Invoke(() => UpdateStatus($"Loaded {clientMasterCount} client master records."));
+                    }
+
                     _excelData = importService.ReadExcelData(_mergedFilePath);
                     Dispatcher.Invoke(() => UpdateStatus($"Read {_excelData.Count} records from file."));
 
                     _processedData = importService.ProcessExcelData(_excelData);
                     Dispatcher.Invoke(() => UpdateStatus($"Processed {_processedData.Count} case records."));
 
-                    // Check client mappings
+                    // Check client mappings (will use client master lookup if loaded)
                     Dispatcher.Invoke(() => UpdateStatus("Checking client mappings..."));
                     var (found, notFound) = importService.CheckClientMappings(_processedData);
 
@@ -240,6 +267,13 @@ namespace LeapMergeDoc.Pages
 
                 await Task.Run(() =>
                 {
+                    // Load client master CSV if provided
+                    if (!string.IsNullOrEmpty(_clientMasterFilePath))
+                    {
+                        Dispatcher.Invoke(() => UpdateStatus("Loading client master CSV..."));
+                        importService.LoadClientMasterCsv(_clientMasterFilePath);
+                    }
+
                     var (success, errors) = importService.ImportCasesToDatabase(_processedData);
 
                     Dispatcher.Invoke(() =>

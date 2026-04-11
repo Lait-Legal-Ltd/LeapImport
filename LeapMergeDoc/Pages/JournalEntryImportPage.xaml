@@ -137,7 +137,7 @@
             <TextBlock Text="Journal Entry Import" 
                        FontSize="28" FontWeight="Bold" 
                        Foreground="#1F2937"/>
-            <TextBlock Text="Upload trial balance Excel file and import journal entries (Date: 31/12/2025)" 
+            <TextBlock Text="Upload CSV file (Client,Matter,Client Name,Matter Description,F/E,W/T,Balance) and import journal entries (Date: 01/04/2026)" 
                        FontSize="14" Foreground="#6B7280" Margin="0,8,0,0"/>
         </StackPanel>
         
@@ -179,7 +179,7 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                    <TextBlock Text="Trial Balance Excel File" FontWeight="SemiBold" FontSize="15" Foreground="#374151"/>
+                    <TextBlock Text="Trial Balance CSV File" FontWeight="SemiBold" FontSize="15" Foreground="#374151"/>
                     <TextBlock x:Name="txtFilePath" Text="No file selected" 
                                FontSize="12" Foreground="#9CA3AF" Margin="0,5,0,0" 
                                TextTrimming="CharacterEllipsis"/>
@@ -202,6 +202,11 @@
                     IsEnabled="False"
                     Margin="0,0,10,0"
                     Click="BtnImport_Click"/>
+            <Button x:Name="btnExportSql" Content="📄 Export SQL" 
+                    Style="{StaticResource ModernButton}"
+                    IsEnabled="False"
+                    Margin="0,0,10,0"
+                    Click="BtnExportSql_Click"/>
             <Button x:Name="btnTruncate" Content="🗑️ Truncate Data" 
                     Style="{StaticResource DangerButton}"
                     Click="BtnTruncate_Click"/>
