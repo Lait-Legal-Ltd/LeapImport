@@ -83,6 +83,11 @@ namespace LeapMergeDoc.Models
         public string? WorkId { get; set; }         // Work Id column (case type code)
         public string? Surname { get; set; }        // Surname for client lookup
         public string? Forename { get; set; }       // Forename for client lookup
+
+        // Archive matters specific fields
+        public string? RememberType { get; set; }   // Rem. Type column
+        public string? Reference { get; set; }      // Reference column
+        public string? Location { get; set; }       // Location column
     }
 
     public class ProcessedCaseData
@@ -97,6 +102,7 @@ namespace LeapMergeDoc.Models
         public string? CaseName { get; set; }
         public string? CaseNameWithClient { get; set; }
         public DateTime? DateOpened { get; set; }
+        public DateTime? DateArchived { get; set; }   // Archive/close date
         public int PersonOpened { get; set; }
         public int? PersonResponsible { get; set; }
         public int? PersonActing { get; set; }

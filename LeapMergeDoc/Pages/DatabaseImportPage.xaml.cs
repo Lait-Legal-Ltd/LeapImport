@@ -125,6 +125,10 @@ namespace LeapMergeDoc.Pages
                     Dispatcher.Invoke(() => UpdateStatus("Checking client mappings..."));
                     var (found, notFound) = importService.CheckClientMappings(_processedData);
 
+                    // Check for existing cases in database
+                    Dispatcher.Invoke(() => UpdateStatus("Checking for existing cases in database..."));
+                    var (existingCount, newCount, existingRefs) = importService.CheckExistingCases(_processedData);
+
                     Dispatcher.Invoke(() =>
                     {
                         UpdateStatus("═══════════════════════════════════════════════════════");
@@ -135,6 +139,20 @@ namespace LeapMergeDoc.Pages
                         UpdateStatus($"📁 EXCEL DATA:");
                         UpdateStatus($"   Total Excel records: {_excelData.Count}");
                         UpdateStatus($"   Processed cases: {_processedData.Count}");
+
+                        // Existing cases check
+                        UpdateStatus($"");
+                        UpdateStatus($"🔍 EXISTING CASES CHECK:");
+                        UpdateStatus($"   ✅ New cases to import: {newCount}");
+                        UpdateStatus($"   ⏭️ Already exist (will skip): {existingCount}");
+                        if (existingCount > 0 && existingRefs.Count <= 10)
+                        {
+                            UpdateStatus($"   Existing case refs: {string.Join(", ", existingRefs.Take(10))}");
+                        }
+                        else if (existingCount > 10)
+                        {
+                            UpdateStatus($"   Sample existing: {string.Join(", ", existingRefs.Take(10))}...");
+                        }
 
                         // Data quality checks
                         int withMatterNo = _processedData.Count(p => !string.IsNullOrEmpty(p.CaseReferenceAuto));
@@ -159,24 +177,43 @@ namespace LeapMergeDoc.Pages
                         UpdateStatus($"   ✅ Clients found in database: {found}");
                         UpdateStatus($"   ⬜ Clients NOT found: {notFound}");
 
-                        // Show unmatched clients (first 10)
+                        // Show ALL unmatched clients (not just sample)
                         var unmatchedClients = _processedData
-                            .Where(p => !p.LinkedClientId.HasValue && !string.IsNullOrEmpty(p.CaseName))
-                            .Select(p => p.CaseName)
-                            .Distinct()
-                            .Take(10)
-                            .ToList();
+                            .Where(p => !p.LinkedClientId.HasValue)
+                            .Select(p => new { 
+                                ClientNo = p.OriginalData?.ClientNo ?? "",
+                                ClientName = p.OriginalData?.CaseName ?? p.OriginalData?.Surname ?? p.CaseName ?? "",
+                                CaseRef = p.CaseReferenceAuto ?? ""
+                            })
+                            .Where(x => !string.IsNullOrEmpty(x.ClientName))
+                            .GroupBy(x => x.ClientNo)  // Group by client code to avoid duplicates
+                            .Select(g => g.First())
+                            .ToList();  // Get ALL unmatched
 
                         if (unmatchedClients.Any())
                         {
-                            UpdateStatus($"   Unmatched clients (sample):");
+                            UpdateStatus($"   ⚠️ ALL {unmatchedClients.Count} UNMATCHED CLIENTS:");
                             foreach (var client in unmatchedClients)
                             {
-                                UpdateStatus($"      • {client}");
+                                var display = !string.IsNullOrEmpty(client.ClientNo) 
+                                    ? $"{client.ClientNo}: {client.ClientName}"
+                                    : client.ClientName;
+                                UpdateStatus($"      • {display}");
                             }
-                            if (notFound > 10)
+                            
+                            // Generate SQL INSERT statements for missing clients
+                            UpdateStatus($"");
+                            UpdateStatus($"📝 SQL TO CREATE MISSING CLIENTS:");
+                            UpdateStatus($"-- Run this SQL to create missing clients as Company type:");
+                            foreach (var client in unmatchedClients)
                             {
-                                UpdateStatus($"      ... and {notFound - 10} more");
+                                var escapedName = client.ClientName.Replace("'", "''");
+                                UpdateStatus($"-- {client.ClientNo}: {client.ClientName}");
+                                UpdateStatus($"INSERT INTO tbl_client (client_type, fk_branch_id, is_archived, is_active, date_time_created, fk_user_id)");
+                                UpdateStatus($"VALUES ('Company', 1, 0, 1, NOW(), 1);");
+                                UpdateStatus($"SET @last_client_id = LAST_INSERT_ID();");
+                                UpdateStatus($"INSERT INTO tbl_client_company (fk_client_id, company_name) VALUES (@last_client_id, '{escapedName}');");
+                                UpdateStatus($"");
                             }
                         }
 
@@ -210,14 +247,39 @@ namespace LeapMergeDoc.Pages
                             UpdateStatus($"   {mt.MatterType}: {mt.Count}");
                         }
 
+                        // Work Type (W/T) codes analysis
+                        var workTypes = _processedData
+                            .Where(p => !string.IsNullOrEmpty(p.OriginalData?.WorkId))
+                            .GroupBy(p => p.OriginalData!.WorkId)
+                            .Select(g => new { 
+                                WorkId = g.Key, 
+                                Count = g.Count(),
+                                HasCaseType = g.Any(x => x.FkCaseTypeId.HasValue)
+                            })
+                            .OrderByDescending(x => x.Count)
+                            .ToList();
+
+                        if (workTypes.Any())
+                        {
+                            UpdateStatus($"");
+                            UpdateStatus($"🏷️ WORK TYPE (W/T) CODES:");
+                            foreach (var wt in workTypes)
+                            {
+                                var status = wt.HasCaseType ? "✅" : "⚠️";
+                                UpdateStatus($"   {status} {wt.WorkId}: {wt.Count} cases");
+                            }
+                        }
+
                         // Case status
                         int activeCases = _processedData.Count(p => p.IsCaseActive);
                         int archivedCases = _processedData.Count(p => p.IsCaseArchived);
+                        int withDateArchived = _processedData.Count(p => p.DateArchived.HasValue);
 
                         UpdateStatus($"");
                         UpdateStatus($"📊 CASE STATUS:");
                         UpdateStatus($"   Active cases: {activeCases}");
                         UpdateStatus($"   Archived cases: {archivedCases}");
+                        UpdateStatus($"   With Archive Date: {withDateArchived}");
 
                         UpdateStatus($"═══════════════════════════════════════════════════════");
                     });
@@ -274,13 +336,14 @@ namespace LeapMergeDoc.Pages
                         importService.LoadClientMasterCsv(_clientMasterFilePath);
                     }
 
-                    var (success, errors) = importService.ImportCasesToDatabase(_processedData);
+                    var (success, errors, skipped) = importService.ImportCasesToDatabase(_processedData);
 
                     Dispatcher.Invoke(() =>
                     {
                         UpdateStatus("═══════════════════════════════════════");
                         UpdateStatus($"📊 IMPORT COMPLETE:");
                         UpdateStatus($"   ✅ Successfully imported: {success}");
+                        UpdateStatus($"   ⏭️ Skipped (already exist): {skipped}");
                         UpdateStatus($"   ❌ Errors: {errors}");
                         UpdateStatus("═══════════════════════════════════════");
                     });

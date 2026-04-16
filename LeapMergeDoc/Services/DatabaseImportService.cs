@@ -254,6 +254,7 @@ namespace LeapMergeDoc.Services
                 // New LEAP format columns
                 case "clientno":
                 case "client no":
+                case "client":  // Archive matters CSV: first column is client code
                     rowData.ClientNo = cellValue;
                     break;
                 case "matter":
@@ -287,8 +288,6 @@ namespace LeapMergeDoc.Services
                     rowData.MatterNo = cellValue;
                     break;
                 case "casename":
-                case "client":
-                case "clientname":
                     rowData.CaseName = cellValue;
                     rowData.ClientName = cellValue;
                     break;
@@ -335,6 +334,29 @@ namespace LeapMergeDoc.Services
                 case "casecredit":
                 case "broughtby":
                     rowData.CreditName = cellValue;
+                    break;
+                // Archive matters CSV columns
+                case "wt":
+                case "w/t":
+                    rowData.WorkId = cellValue;
+                    break;
+                case "clientname":
+                case "client name":
+                    rowData.CaseName = cellValue;  // For archive matters: this is the company/client name
+                    rowData.Surname = cellValue;   // Also use as surname for client lookup
+                    rowData.ClientName = cellValue;
+                    break;
+                case "remtype":
+                case "rem.type":
+                case "remembertype":
+                    rowData.RememberType = cellValue;
+                    break;
+                case "reference":
+                case "ref":
+                    rowData.Reference = cellValue;
+                    break;
+                case "location":
+                    rowData.Location = cellValue;
                     break;
             }
         }
@@ -588,6 +610,7 @@ namespace LeapMergeDoc.Services
                 CaseNumber = caseNumber,
                 CaseName = !string.IsNullOrEmpty(row.MatterDescription) ? row.MatterDescription : row.CaseName,
                 DateOpened = row.DateOpened,
+                DateArchived = row.ArchiveDate,
                 PersonOpened = 1,
                 PersonResponsible = personResponsible,
                 PersonActing = personActing,
@@ -726,6 +749,40 @@ namespace LeapMergeDoc.Services
                 }
             }
 
+            // Add fallback W/T code mappings for archive matters (if not already in database)
+            // Format: W/T Code -> (CaseTypeId, AreaOfPracticeId)
+            // Area IDs: 2=Civil litigation, 3=Company commercial, 6=Criminal, 8=Employment, 
+            //           9=Family, 11=Immigration, 13=IP, 18=Commercial Conveyancing, 
+            //           19=Residential Conveyancing, 22=Wills/Probate, 23=Miscellaneous
+            var fallbackMappings = new Dictionary<string, (int CaseTypeId, int AreaOfPracticeId)>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "COM", (87, 3) },      // Commercial -> Company commercial (3)
+                { "CORP", (108, 3) },    // Corporate -> Company commercial (3) - Corporate Services
+                { "EMP", (81, 8) },      // Employment -> Employment (8)
+                { "FILM", (74, 23) },    // Film -> Miscellaneous (23)
+                { "DRI", (74, 23) },     // Digital Rights/IP -> Miscellaneous (23) 
+                { "ADMIN", (74, 23) },   // Admin -> Miscellaneous (23)
+                { "PROP", (61, 19) },    // Property -> Residential Conveyancing (19)
+                { "RENT", (54, 18) },    // Rent -> Commercial Conveyancing (18) - Commercial Lease
+                { "LIT", (73, 2) },      // Litigation -> Civil litigation (2)
+                { "FAM", (93, 9) },      // Family -> Family (9)
+                { "CRIM", (80, 6) },     // Criminal -> Criminal justice (6)
+                { "IMM", (104, 11) },    // Immigration -> Immigration (11)
+                { "WILL", (83, 22) },    // Wills -> Wills and Probate (22)
+                { "PROB", (110, 22) },   // Probate -> Wills and Probate (22)
+                { "CONV", (61, 19) },    // Conveyancing -> Residential Conveyancing (19)
+                { "DEBT", (73, 2) },     // Debt -> Civil litigation (2)
+            };
+
+            foreach (var mapping in fallbackMappings)
+            {
+                if (!caseTypeLookup.ContainsKey(mapping.Key))
+                {
+                    caseTypeLookup[mapping.Key] = mapping.Value;
+                    _logAction($"Added fallback W/T mapping: {mapping.Key} -> CaseType={mapping.Value.CaseTypeId}, Area={mapping.Value.AreaOfPracticeId}");
+                }
+            }
+
             return caseTypeLookup;
         }
 
@@ -795,6 +852,24 @@ namespace LeapMergeDoc.Services
                 return caseRef.Substring(0, dashIndex).Trim();
             }
             return caseRef.Trim();
+        }
+
+        /// <summary>
+        /// Normalizes special characters in search terms for consistent matching.
+        /// Converts curly/smart quotes to straight quotes.
+        /// </summary>
+        private string NormalizeSearchTerm(string term)
+        {
+            if (string.IsNullOrEmpty(term))
+                return term;
+
+            return term
+                .Replace('\u2019', '\'')  // Right single quotation mark → straight apostrophe
+                .Replace('\u2018', '\'')  // Left single quotation mark → straight apostrophe
+                .Replace('\u201C', '"')   // Left double quotation mark → straight quote
+                .Replace('\u201D', '"')   // Right double quotation mark → straight quote
+                .Replace('\u2013', '-')   // En dash → hyphen
+                .Replace('\u2014', '-');  // Em dash → hyphen
         }
 
         /// <summary>
@@ -1057,6 +1132,9 @@ namespace LeapMergeDoc.Services
 
         private ClientInfo? SearchCompanyByName(MySqlConnection connection, string clientName)
         {
+            // Normalize special characters (curly quotes to straight quotes)
+            string normalizedName = NormalizeSearchTerm(clientName);
+            
             string sql = @"
                 SELECT c.client_id, cc.company_name as full_name
                 FROM tbl_client c
@@ -1066,7 +1144,7 @@ namespace LeapMergeDoc.Services
 
             using (var cmd = new MySqlCommand(sql, connection))
             {
-                cmd.Parameters.AddWithValue("@clientName", $"%{clientName}%");
+                cmd.Parameters.AddWithValue("@clientName", $"%{normalizedName}%");
 
                 using (var reader = cmd.ExecuteReader())
                 {
@@ -1084,14 +1162,34 @@ namespace LeapMergeDoc.Services
             return null;
         }
 
-        public (int success, int errors) ImportCasesToDatabase(List<ProcessedCaseData> processedData)
+        public (int success, int errors, int skipped) ImportCasesToDatabase(List<ProcessedCaseData> processedData)
         {
             int successCount = 0;
             int errorCount = 0;
+            int skippedCount = 0;
 
             using (var connection = new MySqlConnection(_connectionString))
             {
                 connection.Open();
+
+                // Load existing case references once
+                var existingCaseRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                string sqlExisting = "SELECT case_reference_auto FROM tbl_case_details_general WHERE case_reference_auto IS NOT NULL";
+                using (var cmdExisting = new MySqlCommand(sqlExisting, connection))
+                {
+                    using (var reader = cmdExisting.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            if (!reader.IsDBNull(0))
+                            {
+                                existingCaseRefs.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                }
+                _logAction($"Checking against {existingCaseRefs.Count} existing cases...");
+
                 using (var transaction = connection.BeginTransaction())
                 {
                     try
@@ -1100,6 +1198,14 @@ namespace LeapMergeDoc.Services
                         {
                             try
                             {
+                                // Check if case already exists
+                                if (!string.IsNullOrEmpty(item.CaseReferenceAuto) && existingCaseRefs.Contains(item.CaseReferenceAuto))
+                                {
+                                    _logAction($"⏭️ Skipping existing case: {item.CaseReferenceAuto}");
+                                    skippedCount++;
+                                    continue;
+                                }
+
                                 if (!string.IsNullOrEmpty(item.ClientFullName))
                                 {
                                     item.CaseNameWithClient = $"{item.CaseName} - {item.ClientFullName}";
@@ -1169,7 +1275,7 @@ namespace LeapMergeDoc.Services
                 }
             }
 
-            return (successCount, errorCount);
+            return (successCount, errorCount, skippedCount);
         }
 
         private int InsertCase(MySqlConnection connection, MySqlTransaction transaction, ProcessedCaseData item)
@@ -1177,12 +1283,12 @@ namespace LeapMergeDoc.Services
             string sql = @"
                 INSERT INTO tbl_case_details_general (
                     fk_branch_id, fk_area_of_practice_id, fk_case_type_id, fk_case_sub_type_id,
-                    case_reference_auto, case_number, case_name, date_opened, person_opened,
+                    case_reference_auto, case_number, case_name, date_opened, date_closed, person_opened,
                     is_case_active, is_case_archived, is_case_not_proceeding,
                     mnl_check, conf_search, case_credit
                 ) VALUES (
                     @fk_branch_id, @fk_area_of_practice_id, @fk_case_type_id, @fk_case_sub_type_id,
-                    @case_reference_auto, @case_number, @case_name, @date_opened, @person_opened,
+                    @case_reference_auto, @case_number, @case_name, @date_opened, @date_closed, @person_opened,
                     @is_case_active, @is_case_archived, @is_case_not_proceeding,
                     @mnl_check, @conf_search, @case_credit
                 );
@@ -1198,6 +1304,7 @@ namespace LeapMergeDoc.Services
                 cmd.Parameters.AddWithValue("@case_number", item.CaseNumber);
                 cmd.Parameters.AddWithValue("@case_name", SanitizeString(item.CaseName ?? item.ClientFullName));  // MatterDescription first, then ClientFullName
                 cmd.Parameters.AddWithValue("@date_opened", item.DateOpened);
+                cmd.Parameters.AddWithValue("@date_closed", item.DateArchived.HasValue ? (object)item.DateArchived.Value : DBNull.Value);
                 cmd.Parameters.AddWithValue("@person_opened", item.PersonOpened);
                 cmd.Parameters.AddWithValue("@is_case_active", item.IsCaseActive);
                 cmd.Parameters.AddWithValue("@is_case_archived", item.IsCaseArchived);
@@ -1407,6 +1514,71 @@ namespace LeapMergeDoc.Services
                     var contactNames = contacts.Take(2).Select(c => $"{c.Forename} {c.Surname}").ToList();
                     _logAction($"Updated company contacts for client {clientId}: {string.Join(", ", contactNames)}");
                 }
+            }
+        }
+
+        /// <summary>
+        /// Checks if a case already exists in the database by case_reference_auto (Client-Matter format)
+        /// </summary>
+        public (int existingCount, int newCount, List<string> existingRefs) CheckExistingCases(List<ProcessedCaseData> processedData)
+        {
+            var existingRefs = new List<string>();
+            int existingCount = 0;
+            int newCount = 0;
+
+            using (var connection = new MySqlConnection(_connectionString))
+            {
+                connection.Open();
+
+                // Get all existing case references
+                var existingCaseRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                string sql = "SELECT case_reference_auto FROM tbl_case_details_general WHERE case_reference_auto IS NOT NULL";
+
+                using (var cmd = new MySqlCommand(sql, connection))
+                {
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            if (!reader.IsDBNull(0))
+                            {
+                                existingCaseRefs.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                }
+
+                _logAction($"Loaded {existingCaseRefs.Count} existing case references from database.");
+
+                foreach (var caseData in processedData)
+                {
+                    if (!string.IsNullOrEmpty(caseData.CaseReferenceAuto) && 
+                        existingCaseRefs.Contains(caseData.CaseReferenceAuto))
+                    {
+                        existingCount++;
+                        existingRefs.Add(caseData.CaseReferenceAuto);
+                    }
+                    else
+                    {
+                        newCount++;
+                    }
+                }
+            }
+
+            return (existingCount, newCount, existingRefs);
+        }
+
+        /// <summary>
+        /// Checks if a specific case exists by case_reference_auto
+        /// </summary>
+        private bool CaseExists(MySqlConnection connection, string caseReferenceAuto)
+        {
+            string sql = "SELECT COUNT(*) FROM tbl_case_details_general WHERE case_reference_auto = @case_reference_auto";
+            using (var cmd = new MySqlCommand(sql, connection))
+            {
+                cmd.Parameters.AddWithValue("@case_reference_auto", caseReferenceAuto);
+                int count = Convert.ToInt32(cmd.ExecuteScalar());
+                return count > 0;
             }
         }
 
