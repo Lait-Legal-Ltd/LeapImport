@@ -110,12 +110,12 @@ The import processes transactions in the following order:
 ### Client to Office
 **Invoice**:
 - `tbl_acc_transactions` - Invoice transaction
-- `tbl_acc_invoices` - Simple invoice (Professional Fee, NO VAT)
+- `tbl_acc_invoice` - Simple invoice (Professional Fee, NO VAT)
   - tax_amount = 0
   - total_amount = net_amount
   - balance_due = 0 (immediately paid)
   - status = 9 (fully paid)
-- `tbl_acc_invoice_status_history` - Status set to Paid
+- `tbl_acc_invoice_status` - Status set to Paid
 
 **C2O Transfer**:
 - `tbl_acc_transactions` - Transfer transaction
