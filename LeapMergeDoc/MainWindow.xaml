@@ -69,8 +69,14 @@
             <TabItem Header="� Account Update">
                 <Frame Source="Pages/AccountUpdateImportPage.xaml" NavigationUIVisibility="Hidden"/>
             </TabItem>
-            <TabItem Header="�📤 Files Collection">
+            <TabItem Header="📤 Files Collection">
                 <Frame Source="Pages/FilesCollectionImportPage.xaml" NavigationUIVisibility="Hidden"/>
+            </TabItem>
+            <TabItem Header="📦 Batch Files Import">
+                <Frame Source="Pages/BatchFilesImportPage.xaml" NavigationUIVisibility="Hidden"/>
+            </TabItem>
+            <TabItem Header="☁️ SharePoint">
+                <Frame Source="Pages/SharePointImportPage.xaml" NavigationUIVisibility="Hidden"/>
             </TabItem>
         </TabControl>
     </Grid>

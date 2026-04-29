@@ -15,6 +15,7 @@
     <PackageReference Include="AWSSDK.S3" Version="3.7.400.30" />
     <PackageReference Include="AWSSDK.Extensions.NETCore.Setup" Version="3.7.7" />
     <PackageReference Include="System.Windows.Forms" Version="4.0.0" />
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.61.3" />
   </ItemGroup>
 
 </Project>

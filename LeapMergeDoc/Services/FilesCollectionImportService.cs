@@ -12,6 +12,16 @@ namespace LeapMergeDoc.Services
 {
     public class FilesCollectionImportService
     {
+        public class FileImportResult
+        {
+            public int CaseId { get; set; }
+            public string FolderPath { get; set; } = string.Empty;
+            public string RelativePath { get; set; } = string.Empty;
+            public string FileName { get; set; } = string.Empty;
+            public string Status { get; set; } = string.Empty;
+            public string? ErrorMessage { get; set; }
+        }
+
         private readonly string _connectionString;
         private readonly S3Configuration _s3Config;
         private readonly Action<string> _logAction;
@@ -54,10 +64,21 @@ namespace LeapMergeDoc.Services
             return _s3Client;
         }
 
+        /// <summary>
+        /// Path to move successfully uploaded files to (set before calling UploadFilesFromFolder)
+        /// </summary>
+        public string? CompletedFolderPath { get; set; }
+
+        /// <summary>
+        /// Per-file outcomes from the most recent UploadFilesFromFolder run.
+        /// </summary>
+        public List<FileImportResult> LastImportResults { get; } = new List<FileImportResult>();
+
         public (int success, int errors) UploadFilesFromFolder(string rootFolderPath, int caseId)
         {
             int successCount = 0;
             int errorCount = 0;
+            LastImportResults.Clear();
 
             try
             {
@@ -96,33 +117,68 @@ namespace LeapMergeDoc.Services
                             folderId = folderIdMap[folderGroup.FolderPath];
                         }
 
-                        var uploadedFiles = new List<FileUploadInfo>();
-
+                        // Process each file individually - upload, save to DB, then move
                         foreach (var fileInfo in folderGroup.Files)
                         {
                             try
                             {
+                                var relativePath = Path.GetRelativePath(rootFolderPath, fileInfo.LocalFilePath);
+
+                                // Check for duplicate before upload (by case + folder + filename)
+                                if (IsFileDuplicate(caseId, folderId, fileInfo.FileName))
+                                {
+                                    _logAction($"⏭️ Skipped (duplicate): {fileInfo.FileName}");
+                                    LastImportResults.Add(new FileImportResult
+                                    {
+                                        CaseId = caseId,
+                                        FolderPath = folderGroup.FolderPath,
+                                        RelativePath = relativePath,
+                                        FileName = fileInfo.FileName,
+                                        Status = "SkippedDuplicate"
+                                    });
+
+                                    // Move to completed since it's already uploaded
+                                    MoveFileToCompleted(fileInfo.LocalFilePath, rootFolderPath);
+                                    continue;
+                                }
+
                                 _logAction($"Uploading: {fileInfo.FileName}");
 
+                                // 1. Upload to S3
                                 var s3Key = UploadFileToS3(s3Client, fileInfo, caseId);
                                 fileInfo.S3Key = s3Key;
-                                uploadedFiles.Add(fileInfo);
+
+                                // 2. Save to DB immediately (single file)
+                                SaveSingleFileToDatabase(caseId, folderId, folderGroup.FolderName, fileInfo);
 
                                 _logAction($"✅ Uploaded: {fileInfo.FileName} -> {s3Key}");
                                 successCount++;
+                                LastImportResults.Add(new FileImportResult
+                                {
+                                    CaseId = caseId,
+                                    FolderPath = folderGroup.FolderPath,
+                                    RelativePath = relativePath,
+                                    FileName = fileInfo.FileName,
+                                    Status = "Uploaded"
+                                });
+
+                                // 3. Move file to completed folder immediately
+                                MoveFileToCompleted(fileInfo.LocalFilePath, rootFolderPath);
                             }
                             catch (Exception ex)
                             {
                                 _logAction($"❌ Failed to upload {fileInfo.FileName}: {ex.Message}");
                                 errorCount++;
+                                LastImportResults.Add(new FileImportResult
+                                {
+                                    CaseId = caseId,
+                                    FolderPath = folderGroup.FolderPath,
+                                    RelativePath = Path.GetRelativePath(rootFolderPath, fileInfo.LocalFilePath),
+                                    FileName = fileInfo.FileName,
+                                    Status = "Failed",
+                                    ErrorMessage = ex.Message
+                                });
                             }
-                        }
-
-                        if (uploadedFiles.Any())
-                        {
-                            _logAction($"Saving {uploadedFiles.Count} files to database for folder: {folderGroup.FolderName} (folderId: {folderId?.ToString() ?? "NULL"})");
-                            SaveFilesToDatabase(caseId, folderId, folderGroup.FolderName, uploadedFiles);
-                            _logAction($"✅ Saved {uploadedFiles.Count} files to database for folder: {folderGroup.FolderName}");
                         }
                     }
                     catch (Exception ex)
@@ -131,6 +187,9 @@ namespace LeapMergeDoc.Services
                         errorCount += folderGroup.Files.Count;
                     }
                 }
+
+                // After all files processed, try to clean up empty folders in source
+                CleanupEmptyFolders(rootFolderPath);
             }
             catch (Exception ex)
             {
@@ -146,6 +205,191 @@ namespace LeapMergeDoc.Services
             }
 
             return (successCount, errorCount);
+        }
+
+        /// <summary>
+        /// Move a single file to the completed folder, preserving relative path structure
+        /// </summary>
+        private void MoveFileToCompleted(string sourceFilePath, string rootFolderPath)
+        {
+            if (string.IsNullOrEmpty(CompletedFolderPath))
+                return;
+
+            try
+            {
+                // Get relative path from root folder
+                var relativePath = Path.GetRelativePath(rootFolderPath, sourceFilePath);
+                var destPath = Path.Combine(CompletedFolderPath, relativePath);
+                var destDir = Path.GetDirectoryName(destPath);
+
+                // Create destination directory if needed
+                if (!string.IsNullOrEmpty(destDir) && !Directory.Exists(destDir))
+                {
+                    Directory.CreateDirectory(destDir);
+                }
+
+                // Move file
+                if (File.Exists(sourceFilePath))
+                {
+                    // Handle if destination already exists
+                    if (File.Exists(destPath))
+                    {
+                        var fileName = Path.GetFileNameWithoutExtension(destPath);
+                        var ext = Path.GetExtension(destPath);
+                        destPath = Path.Combine(destDir!, $"{fileName}_{DateTime.Now:yyyyMMdd_HHmmss}{ext}");
+                    }
+                    
+                    File.Move(sourceFilePath, destPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logAction($"⚠️ Could not move file: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Remove empty directories after files have been moved
+        /// </summary>
+        private void CleanupEmptyFolders(string rootFolderPath)
+        {
+            try
+            {
+                // Recursively delete empty subdirectories
+                foreach (var dir in Directory.GetDirectories(rootFolderPath, "*", SearchOption.AllDirectories)
+                    .OrderByDescending(d => d.Length)) // Process deepest first
+                {
+                    try
+                    {
+                        if (Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
+                        {
+                            Directory.Delete(dir);
+                        }
+                    }
+                    catch { }
+                }
+
+                // Delete root if empty
+                if (Directory.Exists(rootFolderPath) && !Directory.EnumerateFileSystemEntries(rootFolderPath).Any())
+                {
+                    Directory.Delete(rootFolderPath);
+                    _logAction($"📁 Removed empty source folder: {rootFolderPath}");
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Check if a file with the same name already exists in the database for this case/folder
+        /// Checks: caseId + folderId (if present) + fileName
+        /// Note: S3 uses GUID filenames, so we check the database which stores original filenames
+        /// </summary>
+        private bool IsFileDuplicate(int caseId, int? folderId, string fileName)
+        {
+            try
+            {
+                using (var connection = new MySqlConnection(_connectionString))
+                {
+                    connection.Open();
+
+                    // Check in tbl_case_correspondence_file for existing file with same name
+                    string sql;
+                    if (folderId.HasValue)
+                    {
+                        // Check within the specific folder AND case
+                        sql = @"
+                            SELECT COUNT(*) FROM tbl_case_correspondence_file 
+                            WHERE fk_case_id = @CaseId 
+                              AND fk_folder_id = @FolderId 
+                              AND file_name = @FileName 
+                              AND is_deleted = 0";
+
+                        using (var cmd = new MySqlCommand(sql, connection))
+                        {
+                            cmd.Parameters.AddWithValue("@CaseId", caseId);
+                            cmd.Parameters.AddWithValue("@FolderId", folderId.Value);
+                            cmd.Parameters.AddWithValue("@FileName", fileName);
+                            var count = Convert.ToInt32(cmd.ExecuteScalar());
+                            return count > 0;
+                        }
+                    }
+                    else
+                    {
+                        // Check for file across the entire case (root level, folder_id = 0)
+                        sql = @"
+                            SELECT COUNT(*) FROM tbl_case_correspondence_file 
+                            WHERE fk_case_id = @CaseId 
+                              AND fk_folder_id = 0 
+                              AND file_name = @FileName 
+                              AND is_deleted = 0";
+
+                        using (var cmd = new MySqlCommand(sql, connection))
+                        {
+                            cmd.Parameters.AddWithValue("@CaseId", caseId);
+                            cmd.Parameters.AddWithValue("@FileName", fileName);
+                            var count = Convert.ToInt32(cmd.ExecuteScalar());
+                            return count > 0;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logAction($"⚠️ Duplicate check failed for {fileName}: {ex.Message}");
+                return false; // If check fails, allow upload to proceed
+            }
+        }
+
+        /// <summary>
+        /// Save a single file to database (called immediately after S3 upload)
+        /// </summary>
+        private void SaveSingleFileToDatabase(int caseId, int? folderId, string folderName, FileUploadInfo fileInfo)
+        {
+            using (var connection = new MySqlConnection(_connectionString))
+            {
+                connection.Open();
+                using (var transaction = connection.BeginTransaction())
+                {
+                    try
+                    {
+                        var documentFormatMap = GetDocumentFormats(connection, transaction);
+
+                        // Create correspondence record
+                        var correspondenceId = InsertCaseCorrespondence(connection, transaction, caseId);
+
+                        // Create document record - use file name as title for individual tracking
+                        var documentTitle = fileInfo.FileName;
+                        var caseDocumentId = InsertCaseCorrespondenceDocument(
+                            connection, transaction, caseId, correspondenceId, documentTitle);
+
+                        // Create upload record
+                        var uploadDocumentId = InsertCaseCorrespondenceDocumentUpload(
+                            connection, transaction, caseDocumentId);
+
+                        // Get format ID
+                        var formatId = documentFormatMap.GetValueOrDefault(fileInfo.Extension, 0);
+                        
+                        // Create upload_file record
+                        InsertCaseCorrespondenceDocumentUploadFile(
+                            connection, transaction, uploadDocumentId, caseDocumentId, 
+                            fileInfo, formatId);
+
+                        // Link to folder
+                        if (folderId.HasValue)
+                        {
+                            AddFileToFolder(connection, transaction, folderId.Value, 
+                                caseId, correspondenceId, caseDocumentId, fileInfo.FileName, fileInfo.S3Key);
+                        }
+
+                        transaction.Commit();
+                    }
+                    catch (Exception ex)
+                    {
+                        transaction.Rollback();
+                        throw new Exception($"DB save failed for {fileInfo.FileName}: {ex.Message}");
+                    }
+                }
+            }
         }
 
         private void CleanupTempFolders()
@@ -188,64 +432,41 @@ namespace LeapMergeDoc.Services
                     var fileInfo = new FileInfo(filePath);
                     var extension = fileInfo.Extension.TrimStart('.').ToLower();
 
-                    // Check if file is a ZIP file
+                    // Skip ZIP files - don't process or extract them
                     if (extension == "zip")
                     {
-                        _logAction($"Found ZIP file: {fileInfo.Name}, extracting at root level...");
-                        try
-                        {
-                            // Get the ZIP's folder path relative to root (where ZIP is located)
-                            var zipRelativePath = Path.GetRelativePath(rootPath, filePath);
-                            var zipFolderPath = Path.GetDirectoryName(zipRelativePath) ?? "";
-                            var zipFileNameWithoutExt = Path.GetFileNameWithoutExtension(fileInfo.Name);
-                            
-                            // Extract ZIP to temporary folder
-                            var tempExtractPath = ExtractZipFile(filePath);
-                            if (!string.IsNullOrEmpty(tempExtractPath))
-                            {
-                                _tempExtractionFolders.Add(tempExtractPath);
-                                _logAction($"Extracted ZIP to: {tempExtractPath}");
-                                
-                                // Process extracted files - treat ZIP contents as if in a folder named after ZIP at root level
-                                ProcessExtractedZipContents(tempExtractPath, rootPath, zipFolderPath, zipFileNameWithoutExt, folderGroupsDict);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logAction($"❌ Failed to extract ZIP file {fileInfo.Name}: {ex.Message}");
-                        }
+                        _logAction($"⏭️ Skipping ZIP file: {fileInfo.Name}");
+                        continue;
                     }
-                    else
+                    
+                    // Regular file - process normally
+                    var relativePath = Path.GetRelativePath(rootPath, filePath);
+                    var folderPath = Path.GetDirectoryName(relativePath) ?? "";
+                    var normalizedFolderPath = NormalizePath(folderPath);
+
+                    var folderKey = string.IsNullOrEmpty(normalizedFolderPath) ? "ROOT" : normalizedFolderPath;
+                    
+                    if (!folderGroupsDict.ContainsKey(folderKey))
                     {
-                        // Regular file - process normally
-                        var relativePath = Path.GetRelativePath(rootPath, filePath);
-                        var folderPath = Path.GetDirectoryName(relativePath) ?? "";
-                        var normalizedFolderPath = NormalizePath(folderPath);
-
-                        var folderKey = string.IsNullOrEmpty(normalizedFolderPath) ? "ROOT" : normalizedFolderPath;
+                        var folderName = string.IsNullOrEmpty(normalizedFolderPath) 
+                            ? "" 
+                            : Path.GetFileName(normalizedFolderPath);
                         
-                        if (!folderGroupsDict.ContainsKey(folderKey))
+                        folderGroupsDict[folderKey] = new FolderFileGroup
                         {
-                            var folderName = string.IsNullOrEmpty(normalizedFolderPath) 
-                                ? "" 
-                                : Path.GetFileName(normalizedFolderPath);
-                            
-                            folderGroupsDict[folderKey] = new FolderFileGroup
-                            {
-                                FolderName = folderName,
-                                FolderPath = normalizedFolderPath,
-                                Files = new List<FileUploadInfo>()
-                            };
-                        }
-
-                        folderGroupsDict[folderKey].Files.Add(new FileUploadInfo
-                        {
-                            LocalFilePath = filePath,
-                            FileName = fileInfo.Name,
+                            FolderName = folderName,
                             FolderPath = normalizedFolderPath,
-                            Extension = extension
-                        });
+                            Files = new List<FileUploadInfo>()
+                        };
                     }
+
+                    folderGroupsDict[folderKey].Files.Add(new FileUploadInfo
+                    {
+                        LocalFilePath = filePath,
+                        FileName = fileInfo.Name,
+                        FolderPath = normalizedFolderPath,
+                        Extension = extension
+                    });
                 }
 
                 var subdirectories = Directory.GetDirectories(currentPath);
